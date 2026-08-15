@@ -44,34 +44,39 @@ The demographic auditing pipeline is designed from first principles to overcome 
 Rather than single-word labels, the prompt dictionary employs orthogonal, clinically descriptive lateral profile feature prompts across demographic cohorts:
 
 ```python
-LATERAL_ORTHODONTIC_PROMPTS = {
+LATERAL_ORTHODONTIC_PROMPT_CLUSTERS = {
     "European": [
         "a lateral side-profile photograph of a Caucasian person with European facial features",
         "a side-view orthodontic portrait of a patient of European Caucasian descent with a prominent nasal bridge and straight profile",
         "a clinical lateral profile photo of an individual of European Caucasian ancestry",
-        "a profile view of a patient with European cranial morphology and light complexion"
+        "a profile view of a patient with European cranial morphology and light complexion",
+        "a lateral photograph of a Caucasian patient showing European facial soft-tissue contours"
     ],
     "African": [
         "a lateral side-profile photograph of a patient of Black African descent",
         "a side-view orthodontic photo of a patient with African ancestry and bimaxillary facial profile",
         "a clinical lateral profile portrait of a Black African individual",
-        "a side profile photo of an individual of Sub-Saharan African heritage"
+        "a side profile photo of an individual of Sub-Saharan African heritage",
+        "a lateral photograph of a Black patient showing African facial soft-tissue morphology"
     ],
     "South_Asian": [
         "a lateral side-profile photograph of a South Asian person from India, Pakistan, or Bangladesh",
         "a side-view orthodontic portrait of an Indian or Pakistani patient",
         "a clinical lateral profile photo of a patient of South Asian descent",
-        "a side profile view of an individual of South Asian ancestry"
+        "a side profile view of an individual of South Asian ancestry",
+        "a lateral photograph of a South Asian individual showing characteristic facial profile"
     ],
     "MENA": [
         "a lateral side-profile photograph of a North African or Middle Eastern Arab patient",
         "a side-view orthodontic portrait of a patient of Maghrebi or Middle Eastern descent",
-        "a clinical lateral profile photo of an individual with North African or Middle Eastern features"
+        "a clinical lateral profile photo of an individual with North African or Middle Eastern features",
+        "a side profile view of an individual of North African or Arab ancestry"
     ],
     "East_Asian": [
         "a lateral side-profile photograph of an East Asian individual",
         "a side-view orthodontic photo of a patient of East Asian descent with characteristic lateral profile",
-        "a clinical lateral profile portrait of an individual of East Asian heritage"
+        "a clinical lateral profile portrait of an individual of East Asian heritage",
+        "a side profile photograph of a person of East Asian descent"
     ]
 }
 ```

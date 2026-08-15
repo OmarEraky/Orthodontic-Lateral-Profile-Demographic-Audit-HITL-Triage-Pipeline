@@ -88,7 +88,7 @@ Start the live triage server:
 ```bash
 docker compose up triage-server
 ```
-Open your browser at **[http://localhost:8000](http://localhost:8000)** to view the interactive dashboard.
+Open your browser at **[http://127.0.0.1:8000](http://127.0.0.1:8000)** (or `http://localhost:8000`) to view the interactive dashboard.
 
 ---
 
@@ -134,7 +134,7 @@ python3 audit_side_profiles.py \
 ```bash
 python3 triage_server.py --host 0.0.0.0 --port 8000
 ```
-Visit **[http://localhost:8000](http://localhost:8000)** in your browser.
+Visit **[http://127.0.0.1:8000](http://127.0.0.1:8000)** (or `http://localhost:8000`) in your browser.
 
 ---
 
