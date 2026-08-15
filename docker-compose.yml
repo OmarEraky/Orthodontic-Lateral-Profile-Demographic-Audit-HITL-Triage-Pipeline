@@ -2,8 +2,6 @@
 # Orthodontic Demographic Audit & HITL Triage Pipeline - Docker Compose
 # ==============================================================================
 
-version: '3.8'
-
 services:
   # ----------------------------------------------------------------------------
   # 1. Interactive Live Triage Dashboard & Physical File Manager
@@ -44,6 +42,7 @@ services:
       "python3", "audit_side_profiles.py",
       "--data-dir", "/app/Dataset",
       "--output-dir", "/app/audit_outputs",
+      "--triage-mode", "hybrid",
       "--model-name", "ViT-B-32",
       "--pretrained", "openai",
       "--batch-size", "32",
