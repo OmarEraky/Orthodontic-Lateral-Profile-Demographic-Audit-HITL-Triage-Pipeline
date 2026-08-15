@@ -34,9 +34,11 @@ RUN useradd -m -u 1000 appuser && \
 # Copy dependency specifications first to leverage Docker layer caching
 COPY requirements.txt .
 
-# Install Python packages
+# Install Python packages (using fast CPU-optimized PyTorch wheels & network timeout protection)
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir --default-timeout=1000 \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        -r requirements.txt
 
 # Copy application source code
 COPY --chown=appuser:appuser audit_side_profiles.py triage_server.py apply_triage_decisions.py ./
