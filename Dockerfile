@@ -26,10 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set up working directory
 WORKDIR /app
 
-# Create non-root user and directories
-RUN useradd -m -u 1000 appuser && \
-    mkdir -p /app/Dataset /app/audit_outputs /app/.cache/torch /app/.cache/huggingface && \
-    chown -R appuser:appuser /app
+# Create required working directories
+RUN mkdir -p /app/Dataset /app/audit_outputs /app/.cache/torch /app/.cache/huggingface
 
 # Copy dependency specifications first to leverage Docker layer caching
 COPY requirements.txt .
@@ -41,10 +39,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
         -r requirements.txt
 
 # Copy application source code
-COPY --chown=appuser:appuser audit_side_profiles.py triage_server.py apply_triage_decisions.py ./
-
-# Switch to non-root user
-USER appuser
+COPY audit_side_profiles.py triage_server.py apply_triage_decisions.py ./
 
 # Expose port for interactive Triage Dashboard
 EXPOSE 8000
