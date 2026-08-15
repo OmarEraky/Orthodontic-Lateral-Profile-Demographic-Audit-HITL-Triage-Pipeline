@@ -61,6 +61,10 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
             self._handle_api_bulk_quarantine()
             return
 
+        if parsed_url.path == "/api/auto_resolve_names":
+            self._handle_api_auto_resolve_names()
+            return
+
         self.send_error(404, "API endpoint not found")
 
     def _handle_api_status(self):
@@ -213,6 +217,84 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
 
             df.to_csv(CSV_PATH, index=False)
             self._send_json({"success": True, "count_quarantined": count_updated}, 200)
+
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    def _handle_api_auto_resolve_names(self):
+        """
+        Batch auto-resolves ambiguous records using high-confidence NLP onomastic suggestions.
+        """
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(content_length).decode("utf-8"))
+            resolutions = data.get("resolutions", [])
+
+            if not resolutions:
+                self._send_json({"error": "No resolutions provided"}, 400)
+                return
+
+            df = pd.read_csv(CSV_PATH)
+            updated_count = 0
+            quarantined_count = 0
+            passed_count = 0
+
+            for res in resolutions:
+                fname = res.get("filename")
+                new_tier = res.get("tier") # TIER_1_PASS or TIER_3_QUARANTINE
+                reason = res.get("reason", "Auto-resolved via NLP onomastic model")
+
+                idx = df[df["filename"] == fname].index
+                if len(idx) > 0:
+                    r_idx = idx[0]
+                    df.at[r_idx, "triage_tier"] = new_tier
+                    df.at[r_idx, "triage_status"] = "AUTO_PASS" if new_tier == "TIER_1_PASS" else "AUTO_QUARANTINE"
+                    df.at[r_idx, "audit_notes"] = f"NLP Onomastic Decision: {new_tier} ({reason})"
+
+                    orig_src = Path(df.at[r_idx, "absolute_path"])
+                    class_folder = str(df.at[r_idx, "class_folder"]).replace("/", "_").replace(" ", "_")
+                    dest_file = QUARANTINE_DIR / class_folder / fname
+
+                    if new_tier == "TIER_3_QUARANTINE":
+                        dest_file.parent.mkdir(parents=True, exist_ok=True)
+                        if orig_src.exists() and not dest_file.exists():
+                            shutil.copy2(orig_src, dest_file)
+                        quarantined_count += 1
+                    elif new_tier == "TIER_1_PASS":
+                        if dest_file.exists():
+                            dest_file.unlink()
+                        passed_count += 1
+
+                    updated_count += 1
+
+            df.to_csv(CSV_PATH, index=False)
+
+            # Update JSON summary
+            tier1 = int((df["triage_tier"] == "TIER_1_PASS").sum())
+            tier2 = int((df["triage_tier"] == "TIER_2_REVIEW").sum())
+            tier3 = int((df["triage_tier"] == "TIER_3_QUARANTINE").sum())
+
+            if JSON_PATH.exists():
+                try:
+                    with open(JSON_PATH, "r") as f:
+                        jdata = json.load(f)
+                    jdata["stratification_summary"]["tier_1_verified_non_european"]["count"] = tier1
+                    jdata["stratification_summary"]["tier_2_clinical_review_queue"]["count"] = tier2
+                    jdata["stratification_summary"]["tier_3_quarantined_european"]["count"] = tier3
+                    with open(JSON_PATH, "w") as f:
+                        json.dump(jdata, f, indent=2)
+                except Exception:
+                    pass
+
+            self._send_json({
+                "success": True,
+                "total_updated": updated_count,
+                "quarantined": quarantined_count,
+                "passed": passed_count,
+                "tier1_total": tier1,
+                "tier2_total": tier2,
+                "tier3_total": tier3
+            }, 200)
 
         except Exception as e:
             self._send_json({"error": str(e)}, 500)

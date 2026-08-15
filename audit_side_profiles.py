@@ -3,21 +3,21 @@
 ================================================================================
 Orthodontic Lateral Profile Demographic Audit & European Profile Isolation Pipeline
 ================================================================================
-Author: Antigravity AI Engineering Team
 Target Task: Non-European Orthodontic Cohort Audit & Quarantine
 Dataset Modality: Lateral Facial Profile Photographs (Angle Class I, II-1, II-2, III)
-Architecture: OpenCLIP / SigLIP Zero-Shot Lateral Prompt Ensemble + 3-Tier HITL Triage
+Architecture: OpenCLIP Zero-Shot Lateral Ensemble + Pretrained NLP Onomastic Model + 3-Tier HITL Triage
 ================================================================================
 """
 
 import os
 import sys
+import re
 import json
 import shutil
 import argparse
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -135,7 +135,125 @@ def compute_normalized_text_embeddings(
 
 
 # ==============================================================================
-# 4. SHANNON ENTROPY & STRATIFICATION DECISION LOGIC
+# 4. PRE-TRAINED NLP ONOMASTIC DEMOGRAPHIC ENGINE (RACEBERT)
+# ==============================================================================
+class NLPOnomasticEngine:
+    """
+    Pre-trained Character & Sub-word Transformer Model (raceBERT) for onomastic demographic inference.
+    Processes patient names without brittle hardcoded name dictionaries.
+    """
+    def __init__(self, model_name: str = "pparasurama/raceBERT-ethnicity", device: str = "cpu"):
+        self.device = device
+        self.model_name = model_name
+        self.tokenizer = None
+        self.model = None
+        self.classifier = None
+        self._init_model()
+
+    def _init_model(self):
+        try:
+            from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name)
+            self.classifier = pipeline(
+                "text-classification",
+                model=self.model,
+                tokenizer=self.tokenizer,
+                device=0 if self.device == "cuda" and torch.cuda.is_available() else -1,
+                top_k=None
+            )
+        except Exception as e:
+            print(f"[!] Warning: Failed to load NLP onomastic model ({e}). Proceeding in visual-only mode.")
+            self.classifier = None
+
+    @staticmethod
+    def parse_name(filename: str) -> str:
+        """
+        Parses clinical filename into a clean, normalized name string.
+        Example: 'DESLOVEREDiego_E_30_1.jpg' -> 'Diego Deslovere'
+                 'FLORESTABASSarah_K_24_1.jpg' -> 'Sarah Flores Tabas'
+        """
+        stem = filename.replace('.jpg', '').replace('.jpeg', '').replace('.png', '')
+        stem = re.sub(r'_[eEkK]_\d+.*$', '', stem)
+        match = re.match(r'^([A-ZÇÉÈÊËÀÂÎÏÔÛÙÜÄÖØÅÆ\s\'-]+?)([A-ZÇÉÈÊËÀÂÎÏÔÛÙÜÄÖØÅÆ][a-zçéèêëàâîïôûùüäöøåæ].*)', stem)
+        if match:
+            surname, given_name = match.group(1), match.group(2)
+            given_name = re.sub(r'([a-z])([A-Z])', r'\1 \2', given_name)
+            return f"{given_name.strip()} {surname.strip()}"
+        return stem.strip()
+
+    def predict_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        """
+        Runs batch NLP inference across a list of parsed names.
+        Returns demographic classification, European vs. Non-European probability, and triage recommendation.
+        """
+        if not self.classifier or not names:
+            return [{
+                "parsed_name": n,
+                "p_name_european": 0.5,
+                "p_name_non_european": 0.5,
+                "name_demographic": "Ambiguous",
+                "nlp_confidence": 0.5,
+                "predicted_origin": "NLP Model Unavailable",
+                "nlp_triage_suggestion": "MANUAL_REVIEW"
+            } for n in names]
+
+        results = self.classifier(names)
+        parsed_outputs = []
+
+        for name, res in zip(names, results):
+            label_scores = {item["label"]: float(item["score"]) for item in res}
+            
+            # Map raceBERT hierarchical classes to European vs Non-European
+            p_eur = sum(score for lbl, score in label_scores.items() if "GreaterEuropean" in lbl)
+            p_non_eur = float(1.0 - p_eur)
+            
+            top_label = res[0]["label"]
+            top_score = float(res[0]["score"])
+            
+            # Extract readable geographic origin description
+            if "GreaterEuropean" in top_label:
+                origin_clean = top_label.replace("GreaterEuropean,", "").replace(",", " / ")
+                demographic_label = "European"
+            elif "Muslim" in top_label:
+                origin_clean = "MENA / Middle Eastern / North African"
+                demographic_label = "MENA"
+            elif "IndianSubContinent" in top_label:
+                origin_clean = "South Asian (Indian / Pakistani)"
+                demographic_label = "South_Asian"
+            elif "Africans" in top_label:
+                origin_clean = "Sub-Saharan African"
+                demographic_label = "African"
+            elif "EastAsian" in top_label or "Asian" in top_label:
+                origin_clean = "East Asian"
+                demographic_label = "East_Asian"
+            else:
+                origin_clean = top_label.replace(",", " / ")
+                demographic_label = "Non-European"
+
+            # Triage suggestion
+            if p_eur >= 0.70:
+                suggestion = "QUARANTINE_EUROPEAN"
+            elif p_non_eur >= 0.70:
+                suggestion = "KEEP_NON_EUROPEAN"
+            else:
+                suggestion = "MANUAL_REVIEW"
+
+            parsed_outputs.append({
+                "parsed_name": name,
+                "p_name_european": round(p_eur, 4),
+                "p_name_non_european": round(p_non_eur, 4),
+                "name_demographic": demographic_label,
+                "nlp_confidence": round(top_score, 4),
+                "predicted_origin": origin_clean,
+                "nlp_triage_suggestion": suggestion
+            })
+
+        return parsed_outputs
+
+
+# ==============================================================================
+# 5. SHANNON ENTROPY & STRATIFICATION DECISION LOGIC
 # ==============================================================================
 def calculate_binary_shannon_entropy(p_eur: float, p_non_eur: float) -> float:
     """
@@ -154,42 +272,60 @@ def calculate_binary_shannon_entropy(p_eur: float, p_non_eur: float) -> float:
 def stratify_demographic_decision(
     probs_dict: Dict[str, float],
     entropy_binary: float,
+    nlp_info: Optional[Dict[str, Any]] = None,
+    triage_mode: str = "hybrid",
     tau_quarantine: float = 0.70,
     tau_retain: float = 0.30
 ) -> Tuple[str, str, str]:
     """
-    Binary Three-Tier Stratification Logic:
-    - Tier 1 (AUTO_PASS): P(Non-European) >= (1 - tau_retain) -> Retain in verified cohort.
-    - Tier 3 (AUTO_QUARANTINE): P(European) >= tau_quarantine -> Isolate to quarantine.
-    - Tier 2 (REVIEW_QUEUE): Borderline 0.30 < P(European) < 0.70 -> Clinical review queue.
+    Binary Three-Tier Stratification Logic supporting:
+    - Mode 'hybrid' (Default): OpenCLIP vision thresholds + NLP name origin metadata badges.
+    - Mode 'name-heuristic': Auto-resolves Tier 2 borderline cases using NLP model certainty.
+    - Mode 'manual': Pure visual baseline.
     """
     p_eur = probs_dict.get("European", 0.0)
     p_non_eur = float(np.sum([v for k, v in probs_dict.items() if k != "European"]))
     non_eur_candidates = {k: v for k, v in probs_dict.items() if k != "European"}
     dominant_non_eur = max(non_eur_candidates.items(), key=lambda x: x[1])[0] if non_eur_candidates else "Unknown"
 
-    # Tier 3: High Confidence European
+    # Tier 3: High Confidence European (AI Vision)
     if p_eur >= tau_quarantine:
         return "TIER_3_QUARANTINE", "AUTO_QUARANTINE", (
             f"High-confidence European profile (P_Eur={p_eur*100:.1f}%). "
             "Isolated to quarantine directory."
         )
 
-    # Tier 1: High Confidence Non-European (Aggregated across all non-European cohorts)
+    # Tier 1: High Confidence Non-European (AI Vision)
     if p_eur <= tau_retain and p_non_eur >= (1.0 - tau_retain):
         return "TIER_1_PASS", "AUTO_PASS", (
             f"Verified Non-European cohort (P_NonEur={p_non_eur*100:.1f}%, dominant={dominant_non_eur}). "
             "Passed to research cohort."
         )
 
-    # Tier 2: True Binary Clinical Ambiguity
+    # If Mode is 'name-heuristic', auto-resolve borderline cases using NLP model certainty
+    if triage_mode == "name-heuristic" and nlp_info:
+        sugg = nlp_info.get("nlp_triage_suggestion")
+        detail = nlp_info.get("predicted_origin", "")
+        p_name_e = nlp_info.get("p_name_european", 0.5)
+        p_name_ne = nlp_info.get("p_name_non_european", 0.5)
+
+        if sugg == "QUARANTINE_EUROPEAN" and p_name_e >= 0.70:
+            return "TIER_3_QUARANTINE", "AUTO_QUARANTINE", (
+                f"Auto-Quarantined via NLP Onomastic Model: Name classified as {detail} (P_Eur={p_name_e*100:.1f}%)"
+            )
+        elif sugg == "KEEP_NON_EUROPEAN" and p_name_ne >= 0.70:
+            return "TIER_1_PASS", "AUTO_PASS", (
+                f"Auto-Passed via NLP Onomastic Model: Name classified as {detail} (P_NonEur={p_name_ne*100:.1f}%)"
+            )
+
+    # Tier 2: True Binary Clinical Ambiguity (Routed to HITL Web Dashboard / Assisted Mode)
     return "TIER_2_REVIEW", "NEEDS_REVIEW", (
         f"Clinical verification required: Borderline European probability ({p_eur*100:.1f}% vs Non-Eur={p_non_eur*100:.1f}%)"
     )
 
 
 # ==============================================================================
-# 5. BATCH AUDIT ENGINE
+# 6. BATCH AUDIT ENGINE
 # ==============================================================================
 def run_batch_demographic_audit(
     image_records: List[Dict[str, Any]],
@@ -197,22 +333,29 @@ def run_batch_demographic_audit(
     preprocess: Any,
     stacked_text_embeddings: torch.Tensor,
     category_names: List[str],
+    nlp_engine: Optional[NLPOnomasticEngine],
     device: torch.device,
     batch_size: int = 32,
     temperature: float = 100.0,
-    tau_quarantine: float = 0.75,
+    triage_mode: str = "hybrid",
+    tau_quarantine: float = 0.70,
     tau_retain: float = 0.30
 ) -> List[Dict[str, Any]]:
     """
-    Executes batched vision-language inference and generates stratified audit metrics.
+    Executes batched vision-language inference and NLP onomastic classification.
     """
     audit_results = []
     total_images = len(image_records)
+
+    # 1. Parse and classify all names using NLP Onomastic Engine
+    parsed_names = [NLPOnomasticEngine.parse_name(rec["filename"]) for rec in image_records]
+    nlp_predictions = nlp_engine.predict_batch(parsed_names) if nlp_engine else [{} for _ in image_records]
 
     pbar = tqdm(total=total_images, desc="Auditing Lateral Profiles", unit="img")
 
     for i in range(0, total_images, batch_size):
         batch_chunk = image_records[i : i + batch_size]
+        batch_nlp = nlp_predictions[i : i + batch_size]
         valid_tensors = []
         valid_chunk_indices = []
 
@@ -224,12 +367,20 @@ def run_batch_demographic_audit(
                 valid_chunk_indices.append(idx_in_chunk)
             except Exception as e:
                 # Corrupt image fallback
+                nlp_info = batch_nlp[idx_in_chunk]
                 res = dict(record)
                 res.update({
                     "dominant_cohort": "ERROR_CORRUPT",
                     "p_european": 0.0,
                     "p_non_european_sum": 0.0,
                     "entropy": 0.0,
+                    "parsed_name": nlp_info.get("parsed_name", record["filename"]),
+                    "name_demographic": nlp_info.get("name_demographic", "Error"),
+                    "p_name_european": nlp_info.get("p_name_european", 0.5),
+                    "p_name_non_european": nlp_info.get("p_name_non_european", 0.5),
+                    "nlp_confidence": nlp_info.get("nlp_confidence", 0.0),
+                    "predicted_origin": nlp_info.get("predicted_origin", "Error"),
+                    "nlp_triage_suggestion": nlp_info.get("nlp_triage_suggestion", "MANUAL_REVIEW"),
                     "triage_tier": "TIER_2_REVIEW",
                     "triage_status": "NEEDS_REVIEW",
                     "audit_notes": f"Corrupt image file: {str(e)}"
@@ -251,6 +402,7 @@ def run_batch_demographic_audit(
 
         for j, chunk_idx in enumerate(valid_chunk_indices):
             record = batch_chunk[chunk_idx]
+            nlp_info = batch_nlp[chunk_idx]
             probs_arr = probabilities[j]
 
             probs_dict = {cat: float(probs_arr[k]) for k, cat in enumerate(category_names)}
@@ -264,6 +416,8 @@ def run_batch_demographic_audit(
             tier_code, triage_status, notes = stratify_demographic_decision(
                 probs_dict=probs_dict,
                 entropy_binary=entropy,
+                nlp_info=nlp_info,
+                triage_mode=triage_mode,
                 tau_quarantine=tau_quarantine,
                 tau_retain=tau_retain
             )
@@ -279,6 +433,13 @@ def run_batch_demographic_audit(
                 "p_east_asian": round(probs_dict.get("East_Asian", 0.0), 4),
                 "p_non_european_sum": round(p_non_eur, 4),
                 "entropy": round(entropy, 4),
+                "parsed_name": nlp_info.get("parsed_name", record["filename"]),
+                "name_demographic": nlp_info.get("name_demographic", "Ambiguous"),
+                "p_name_european": nlp_info.get("p_name_european", 0.5),
+                "p_name_non_european": nlp_info.get("p_name_non_european", 0.5),
+                "nlp_confidence": nlp_info.get("nlp_confidence", 0.5),
+                "predicted_origin": nlp_info.get("predicted_origin", "Ambiguous"),
+                "nlp_triage_suggestion": nlp_info.get("nlp_triage_suggestion", "MANUAL_REVIEW"),
                 "triage_tier": tier_code,
                 "triage_status": triage_status,
                 "audit_notes": notes
@@ -687,6 +848,64 @@ def generate_triage_html_dashboard(
             font-weight: 600;
         }}
 
+        /* NLP Onomastic Metadata Box */
+        .nlp-badge-box {{
+            background: rgba(30, 41, 59, 0.75);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 0.5rem 0.65rem;
+            margin-bottom: 0.75rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }}
+
+        .nlp-title-row {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.75rem;
+            font-family: var(--font-mono);
+        }}
+
+        .nlp-name-tag {{
+            color: #f1f5f9;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 170px;
+        }}
+
+        .nlp-origin-badge {{
+            font-size: 0.7rem;
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+        }}
+
+        .origin-eur {{
+            background: rgba(239, 68, 68, 0.18);
+            color: #fca5a5;
+            border: 1px solid rgba(239, 68, 68, 0.35);
+        }}
+
+        .origin-noneur {{
+            background: rgba(16, 185, 129, 0.18);
+            color: #6ee7b7;
+            border: 1px solid rgba(16, 185, 129, 0.35);
+        }}
+
+        .origin-ambig {{
+            background: rgba(148, 163, 184, 0.18);
+            color: #cbd5e1;
+            border: 1px solid rgba(148, 163, 184, 0.35);
+        }}
+
         /* Card Action Buttons */
         .card-actions {{
             margin-top: auto;
@@ -728,6 +947,18 @@ def generate_triage_html_dashboard(
             background: rgba(239, 68, 68, 0.3);
         }}
 
+        .btn-nlp-suggest {{
+            background: rgba(99, 102, 241, 0.18);
+            color: #a5b4fc;
+            border: 1px solid rgba(99, 102, 241, 0.35);
+            grid-column: span 2;
+            margin-bottom: 0.25rem;
+        }}
+
+        .btn-nlp-suggest:hover {{
+            background: rgba(99, 102, 241, 0.35);
+        }}
+
         .empty-state {{
             grid-column: 1 / -1;
             text-align: center;
@@ -741,10 +972,11 @@ def generate_triage_html_dashboard(
         <header>
             <div class="header-title">
                 <h1>Orthodontic Demographic Audit & HITL Triage Dashboard</h1>
-                <p>Zero-Shot OpenCLIP Lateral Profile Ensemble & Live Human-in-the-Loop Synchronization</p>
+                <p>Zero-Shot OpenCLIP Lateral Profile Ensemble + Pretrained NLP Onomastic Model & Live Human-in-the-Loop Sync</p>
             </div>
             <div class="header-badges">
                 <div class="badge" id="serverStatusBadge">🔄 Checking Server...</div>
+                <button class="badge" onclick="autoResolveReviewQueue()" style="cursor:pointer; background:#1e1b4b; color:#a5b4fc; border-color:#6366f1;">🪄 Auto-Resolve Review Queue by NLP</button>
                 <button class="badge" onclick="exportUpdatedCSV()" style="cursor:pointer; background:#1e293b; color:#60a5fa; border-color:#3b82f6;">📥 Export Updated CSV</button>
                 <div class="badge">🔒 100% Offline Clinical Data</div>
             </div>
@@ -887,8 +1119,10 @@ def generate_triage_html_dashboard(
                 const matchTab = (currentFilter === 'ALL' || item.triage_tier === currentFilter);
                 const matchSearch = searchQuery === '' || 
                     item.filename.toLowerCase().includes(searchQuery) ||
+                    (item.parsed_name && item.parsed_name.toLowerCase().includes(searchQuery)) ||
                     item.class_folder.toLowerCase().includes(searchQuery) ||
-                    item.dominant_cohort.toLowerCase().includes(searchQuery);
+                    item.dominant_cohort.toLowerCase().includes(searchQuery) ||
+                    (item.predicted_origin && item.predicted_origin.toLowerCase().includes(searchQuery));
                 return matchTab && matchSearch;
             }});
 
@@ -916,6 +1150,17 @@ def generate_triage_html_dashboard(
                 const nonEurPct = (item.p_non_european_sum * 100).toFixed(1);
                 const imgSrc = encodeURI(item.html_img_path);
 
+                const nlpOriginClass = (item.p_name_european >= 0.70) ? 'origin-eur' : ((item.p_name_non_european >= 0.70) ? 'origin-noneur' : 'origin-ambig');
+                const nlpSuggLabel = item.nlp_triage_suggestion === 'QUARANTINE_EUROPEAN' ? 'Quarantine (Eur)' : (item.nlp_triage_suggestion === 'KEEP_NON_EUROPEAN' ? 'Keep (Non-Eur)' : 'Review');
+
+                let nlpActionHtml = '';
+                if (item.triage_tier === 'TIER_2_REVIEW' && item.nlp_triage_suggestion && item.nlp_triage_suggestion !== 'MANUAL_REVIEW') {{
+                    const targetTier = item.nlp_triage_suggestion === 'QUARANTINE_EUROPEAN' ? 'TIER_3_QUARANTINE' : 'TIER_1_PASS';
+                    nlpActionHtml = `
+                        <button class="btn-action btn-nlp-suggest" onclick="updateDecision('${{item.filename}}', '${{targetTier}}')">⚡ Accept NLP: ${{nlpSuggLabel}}</button>
+                    `;
+                }}
+
                 card.innerHTML = `
                     <div class="card-img-wrap" onclick="openZoom('${{imgSrc}}', '${{item.filename}}')" style="cursor: pointer;" title="Click to enlarge profile photo">
                         <img src="${{imgSrc}}" alt="${{item.filename}}" loading="lazy" onerror="this.onerror=null; this.src='https://placehold.co/400x300/1e293b/94a3b8?text=Image+Load+Error'">
@@ -925,9 +1170,18 @@ def generate_triage_html_dashboard(
                         <div class="card-filename" title="${{item.filename}}">${{item.filename}}</div>
                         <div class="card-class">${{item.class_folder}} • H=${{item.entropy.toFixed(2)}}</div>
 
+                        <!-- NLP Onomastic Box -->
+                        <div class="nlp-badge-box">
+                            <div class="nlp-title-row">
+                                <span class="nlp-name-tag" title="${{item.parsed_name || item.filename}}">🏷️ ${{item.parsed_name || item.filename}}</span>
+                                <span class="nlp-origin-badge ${{nlpOriginClass}}">NLP: ${{item.name_demographic || 'Ambiguous'}} (${{((item.nlp_confidence || 0.5)*100).toFixed(0)}}%)</span>
+                            </div>
+                            <div style="font-size:0.7rem; color:var(--text-muted); margin-top:2px;">Origin: ${{item.predicted_origin || 'Ambiguous / Mixed'}}</div>
+                        </div>
+
                         <div class="prob-section">
                             <div class="prob-row">
-                                <span class="prob-label">European Probability:</span>
+                                <span class="prob-label">Vision European Probability:</span>
                                 <span class="prob-val" style="color: ${{item.p_european >= 0.5 ? '#ef4444' : '#94a3b8'}}">${{eurPct}}%</span>
                             </div>
                             <div class="progress-track">
@@ -935,7 +1189,7 @@ def generate_triage_html_dashboard(
                             </div>
 
                             <div class="prob-row">
-                                <span class="prob-label">Non-European Probability:</span>
+                                <span class="prob-label">Vision Non-European Probability:</span>
                                 <span class="prob-val" style="color: #10b981">${{nonEurPct}}%</span>
                             </div>
                             <div class="progress-track">
@@ -951,6 +1205,7 @@ def generate_triage_html_dashboard(
                         </div>
 
                         <div class="card-actions">
+                            ${{nlpActionHtml}}
                             <button class="btn-action btn-pass" onclick="updateDecision('${{item.filename}}', 'TIER_1_PASS')">Keep (Non-Eur)</button>
                             <button class="btn-action btn-quarantine" onclick="updateDecision('${{item.filename}}', 'TIER_3_QUARANTINE')">Quarantine (Eur)</button>
                         </div>
@@ -1018,10 +1273,71 @@ def generate_triage_html_dashboard(
             renderGallery();
         }}
 
+        async function autoResolveReviewQueue() {{
+            const tier2Items = auditData.filter(i => i.triage_tier === 'TIER_2_REVIEW');
+            if (tier2Items.length === 0) {{
+                showToast('Review Queue is already empty!', false);
+                return;
+            }}
+
+            const resolvable = tier2Items.filter(i => (i.p_name_european >= 0.70 || i.p_name_non_european >= 0.70) && i.nlp_triage_suggestion !== 'MANUAL_REVIEW');
+            if (resolvable.length === 0) {{
+                showToast('No high-confidence NLP suggestions available for remaining items.', true);
+                return;
+            }}
+
+            if (!confirm(`Apply NLP Onomastic recommendations to ${{resolvable.length}} ambiguous patient profiles?`)) {{
+                return;
+            }}
+
+            const resolutions = resolvable.map(item => ({{
+                filename: item.filename,
+                tier: item.nlp_triage_suggestion === 'QUARANTINE_EUROPEAN' ? 'TIER_3_QUARANTINE' : 'TIER_1_PASS',
+                reason: `${{item.predicted_origin}} (NLP Conf: ${{(item.nlp_confidence*100).toFixed(0)}}%)`
+            }}));
+
+            let overrides = JSON.parse(localStorage.getItem('ortho_triage_overrides') || '{{}}');
+            resolutions.forEach(res => {{
+                const rec = auditData.find(r => r.filename === res.filename);
+                if (rec) {{
+                    rec.triage_tier = res.tier;
+                    rec.triage_status = res.tier === 'TIER_1_PASS' ? 'AUTO_PASS' : 'AUTO_QUARANTINE';
+                    rec.is_manual_override = true;
+                    rec.audit_notes = `NLP Onomastic Decision: ${{res.reason}}`;
+                    overrides[res.filename] = {{ tier: res.tier, status: rec.triage_status, timestamp: new Date().toISOString() }};
+                }}
+            }});
+
+            try {{
+                localStorage.setItem('ortho_triage_overrides', JSON.stringify(overrides));
+            }} catch (e) {{}}
+
+            if (isServerLive) {{
+                try {{
+                    const resp = await fetch('/api/auto_resolve_names', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ resolutions }})
+                    }});
+                    const resJson = await resp.json();
+                    if (resJson.success) {{
+                        showToast(`✓ Auto-resolved ${{resJson.total_updated}} profiles (${{resJson.quarantined}} Quarantined, ${{resJson.passed}} Verified) and synced to disk!`);
+                    }}
+                }} catch (err) {{
+                    showToast(`Auto-resolved locally (${{resolvable.length}} items)`, false);
+                }}
+            }} else {{
+                showToast(`✓ Auto-resolved ${{resolvable.length}} profiles locally!`);
+            }}
+
+            updateKPICounters();
+            renderGallery();
+        }}
+
         function exportUpdatedCSV() {{
-            let csv = "filename,relative_path,class_folder,dominant_cohort,p_european,p_african,p_south_asian,p_mena,p_east_asian,p_non_european_sum,entropy,triage_tier,triage_status,audit_notes\\n";
+            let csv = "filename,relative_path,class_folder,parsed_name,name_demographic,predicted_origin,nlp_confidence,p_name_european,p_name_non_european,nlp_triage_suggestion,dominant_cohort,p_european,p_african,p_south_asian,p_mena,p_east_asian,p_non_european_sum,entropy,triage_tier,triage_status,audit_notes\\n";
             auditData.forEach(r => {{
-                csv += `"${{r.filename}}","${{r.relative_path}}","${{r.class_folder}}","${{r.dominant_cohort}}",${{r.p_european}},${{r.p_african}},${{r.p_south_asian}},${{r.p_mena}},${{r.p_east_asian}},${{r.p_non_european_sum}},${{r.entropy}},"${{r.triage_tier}}","${{r.triage_status}}","${{r.audit_notes || ''}}"\\n`;
+                csv += `"${{r.filename}}","${{r.relative_path}}","${{r.class_folder}}","${{r.parsed_name || ''}}","${{r.name_demographic || ''}}","${{r.predicted_origin || ''}}",${{r.nlp_confidence || 0}},${{r.p_name_european || 0}},${{r.p_name_non_european || 0}},"${{r.nlp_triage_suggestion || ''}}","${{r.dominant_cohort}}",${{r.p_european}},${{r.p_african}},${{r.p_south_asian}},${{r.p_mena}},${{r.p_east_asian}},${{r.p_non_european_sum}},${{r.entropy}},"${{r.triage_tier}}","${{r.triage_status}}","${{r.audit_notes || ''}}"\\n`;
             }});
 
             const blob = new Blob([csv], {{ type: 'text/csv;charset=utf-8;' }});
@@ -1078,7 +1394,7 @@ def generate_triage_html_dashboard(
 # ==============================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Audit orthodontic lateral profile images for European/Caucasian profiles using OpenCLIP zero-shot prompt ensembles."
+        description="Audit orthodontic lateral profile images for European/Caucasian profiles using OpenCLIP zero-shot prompt ensembles and NLP onomastic model."
     )
     parser.add_argument(
         "--data-dir",
@@ -1103,6 +1419,19 @@ def main():
         type=str,
         default="openai",
         help="Pretrained weight tag (e.g., openai, laion2b_s34b_b79k, datacomp_xl_s13b_b90k)."
+    )
+    parser.add_argument(
+        "--triage-mode",
+        type=str,
+        choices=["hybrid", "name-heuristic", "manual"],
+        default="hybrid",
+        help="Triage operational mode: hybrid (assisted with badges), name-heuristic (automated NLP for borderline), manual (pure vision)."
+    )
+    parser.add_argument(
+        "--nlp-model",
+        type=str,
+        default="pparasurama/raceBERT-ethnicity",
+        help="HuggingFace repository name for pre-trained onomastic demographic model."
     )
     parser.add_argument(
         "--batch-size",
@@ -1147,7 +1476,8 @@ def main():
     print("=" * 80)
     print(f"[*] Dataset Root:     {data_root}")
     print(f"[*] Output Directory: {output_root}")
-    print(f"[*] Model Config:     {args.model_name} (weights: {args.pretrained})")
+    print(f"[*] Vision Model:     {args.model_name} (weights: {args.pretrained})")
+    print(f"[*] NLP Model:        {args.nlp_model} (mode: {args.triage_mode})")
     print(f"[*] Compute Device:   {args.device.upper()}")
     print(f"[*] Thresholds:       Quarantine P(Eur)>={args.tau_quarantine} | Pass P(Eur)<={args.tau_retain}")
     print("=" * 80)
@@ -1162,7 +1492,7 @@ def main():
         sys.exit(1)
 
     # 2. Model Loading
-    print(f"[2/5] Initializing OpenCLIP {args.model_name} on {args.device}...")
+    print(f"[2/5] Initializing OpenCLIP {args.model_name} & NLP Onomastic Model on {args.device}...")
     device = torch.device(args.device)
     model, _, preprocess = open_clip.create_model_and_transforms(
         args.model_name,
@@ -1170,6 +1500,10 @@ def main():
         device=device
     )
     tokenizer = open_clip.get_tokenizer(args.model_name)
+
+    nlp_engine = None
+    if args.triage_mode != "manual":
+        nlp_engine = NLPOnomasticEngine(model_name=args.nlp_model, device=args.device)
 
     # 3. Prompt Text Embeddings
     print("[3/5] Encoding domain-engineered orthodontic lateral prompt ensembles...")
@@ -1182,15 +1516,17 @@ def main():
     print(f"      Compiled {len(category_names)} demographic cohorts: {category_names}")
 
     # 4. Batch Audit Inference
-    print(f"[4/5] Executing batch inference across {len(image_records)} images (batch_size={args.batch_size})...")
+    print(f"[4/5] Executing batch inference across {len(image_records)} images (batch_size={args.batch_size}, mode={args.triage_mode})...")
     audit_results = run_batch_demographic_audit(
         image_records=image_records,
         model=model,
         preprocess=preprocess,
         stacked_text_embeddings=stacked_text_embeddings,
         category_names=category_names,
+        nlp_engine=nlp_engine,
         device=device,
         batch_size=args.batch_size,
+        triage_mode=args.triage_mode,
         tau_quarantine=args.tau_quarantine,
         tau_retain=args.tau_retain
     )
@@ -1226,6 +1562,8 @@ def main():
         "total_images_audited": len(audit_results),
         "model_architecture": args.model_name,
         "pretrained_weights": args.pretrained,
+        "triage_mode": args.triage_mode,
+        "nlp_model": args.nlp_model if args.triage_mode != "manual" else "None",
         "stratification_summary": {
             "tier_1_verified_non_european": {
                 "count": tier1_total,

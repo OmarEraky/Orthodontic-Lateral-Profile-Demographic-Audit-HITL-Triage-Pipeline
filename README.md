@@ -109,16 +109,25 @@ pip install -r requirements.txt
 
 ### Step 2: Execute Batch Audit Pipeline
 ```bash
+# Mode 'hybrid' (Default): OpenCLIP vision + NLP onomastic badges in web review
 python3 audit_side_profiles.py \
     --data-dir "Dataset" \
     --output-dir "audit_outputs" \
+    --triage-mode "hybrid" \
     --model-name "ViT-B-32" \
     --pretrained "openai" \
+    --nlp-model "pparasurama/raceBERT-ethnicity" \
     --batch-size 32 \
     --device "cpu" \
     --tau-quarantine 0.70 \
     --tau-retain 0.30 \
     --quarantine-mode "copy"
+
+# Mode 'name-heuristic': Fully automated triage combining vision & high-confidence NLP certainty
+# python3 audit_side_profiles.py --triage-mode name-heuristic
+
+# Mode 'manual': Pure vision baseline without NLP badges
+# python3 audit_side_profiles.py --triage-mode manual
 ```
 
 ### Step 3: Launch Live Triage Server
@@ -134,16 +143,19 @@ Visit **[http://localhost:8000](http://localhost:8000)** in your browser.
 The web dashboard (`audit_outputs/triage_review.html`) provides real-time Human-in-the-Loop review:
 
 1. **KPI Summary Cards:** Displays total profiles audited, verified non-European counts, review queue volume, and quarantined European counts.
-2. **Filterable Tabs:** Seamlessly toggle between:
+2. **🏷️ NLP Onomastic Demographic Badges:** Displays sub-word and character-level origin classifications (e.g. `🏷️ Rayan AAMAMOU | NLP: MENA (88%)`, `🏷️ Diego DESLOVERE | NLP: European (73%)`, `🏷️ Sarah Kumar | NLP: South Asian (87%)`) on every card.
+3. **Filterable Tabs:** Seamlessly toggle between:
    * **All Profiles** (Complete dataset)
    * **Quarantined European** (Isolated European profiles)
    * **Review Queue** (Borderline / ambiguous cases)
    * **Verified Non-European** (Auto-passed cohort)
-3. **1-Click Triage Actions:**
+4. **1-Click Triage Actions:**
+   * **`🪄 Auto-Resolve Review Queue by NLP`**: 1-click batch resolves borderline cases where the NLP onomastic model has high confidence, instantly synchronizing files on disk.
+   * **`⚡ Accept NLP Suggestion`**: 1-click apply on individual cards.
    * **`Quarantine (Eur)`**: Automatically copies the image to `audit_outputs/Quarantined_European_Profiles/[Malocclusion_Class]/` and updates the CSV ledger on disk.
    * **`Keep (Non-Eur)`**: Retains the profile in the clean cohort and updates the ledger.
-4. **Interactive Modal Zoom:** Click any thumbnail to inspect high-resolution craniofacial contours.
-5. **CSV Export:** Download the updated audit ledger at any time via **`📥 Export Updated CSV`**.
+5. **Interactive Modal Zoom:** Click any thumbnail to inspect high-resolution craniofacial contours.
+6. **CSV Export:** Download the updated audit ledger at any time via **`📥 Export Updated CSV`**.
 
 ---
 
