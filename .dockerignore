@@ -1,0 +1,46 @@
+# ==============================================================================
+# Docker Build Ignore Rules
+# Keep image lean and prevent sensitive clinical data from entering Docker layers
+# ==============================================================================
+
+# Patient Datasets & Media (Passed only via volume mounts)
+Dataset/
+Dataset/**
+Datasets/
+data/
+*.zip
+*.tar.gz
+*.tar
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tif
+*.webp
+
+# Audit Output Directories & Files
+audit_outputs/
+audit_outputs/**
+*.csv
+*.json
+
+# Virtual Environments & Caches
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.cache/
+.huggingface/
+
+# Git & System Files
+.git/
+.gitignore
+.dockerignore
+.DS_Store
+.vscode/
+.idea/
+.antigravity/
+.antigravity-ide/

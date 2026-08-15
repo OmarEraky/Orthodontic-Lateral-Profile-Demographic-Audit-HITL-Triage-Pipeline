@@ -1,0 +1,65 @@
+# ==============================================================================
+# Orthodontic Demographic Audit & HITL Triage Pipeline - Docker Compose
+# ==============================================================================
+
+version: '3.8'
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. Interactive Live Triage Dashboard & Physical File Manager
+  # ----------------------------------------------------------------------------
+  triage-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ortho_triage_server
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount input dataset (read-only for security)
+      - ./Dataset:/app/Dataset:ro
+      # Mount outputs directory (read-write for CSV manifests & quarantine isolation)
+      - ./audit_outputs:/app/audit_outputs:rw
+      # Persistent cache for OpenCLIP foundation weights (avoids re-downloading)
+      - model_cache:/app/.cache:rw
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORT=8000
+    restart: unless-stopped
+
+  # ----------------------------------------------------------------------------
+  # 2. Automated Batch Audit Inference Runner (Run on-demand)
+  # Usage: docker compose run --rm audit-runner
+  # ----------------------------------------------------------------------------
+  audit-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ortho_audit_runner
+    volumes:
+      - ./Dataset:/app/Dataset:ro
+      - ./audit_outputs:/app/audit_outputs:rw
+      - model_cache:/app/.cache:rw
+    command: [
+      "python3", "audit_side_profiles.py",
+      "--data-dir", "/app/Dataset",
+      "--output-dir", "/app/audit_outputs",
+      "--model-name", "ViT-B-32",
+      "--pretrained", "openai",
+      "--batch-size", "32",
+      "--device", "cpu",
+      "--tau-quarantine", "0.70",
+      "--tau-retain", "0.30"
+    ]
+    # To enable NVIDIA GPU acceleration, uncomment the section below:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  model_cache:
+    name: ortho_openclip_cache
