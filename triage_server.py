@@ -70,23 +70,35 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
     def _handle_api_status(self):
         """Returns current audit stats and dataset manifest."""
         if not CSV_PATH.exists():
-            self._send_json({"error": "CSV results not found"}, 404)
+            self._send_json({
+                "status": "ready",
+                "total": 0,
+                "tier1_pass": 0,
+                "tier2_review": 0,
+                "tier3_quarantine": 0,
+                "quarantine_count": 0,
+                "message": "Audit ledger not yet generated. Run audit-runner first."
+            }, 200)
             return
 
-        df = pd.read_csv(CSV_PATH)
-        total = len(df)
-        tier1 = int((df["triage_tier"] == "TIER_1_PASS").sum())
-        tier2 = int((df["triage_tier"] == "TIER_2_REVIEW").sum())
-        tier3 = int((df["triage_tier"] == "TIER_3_QUARANTINE").sum())
+        try:
+            df = pd.read_csv(CSV_PATH)
+            total = len(df)
+            tier1 = int((df["triage_tier"] == "TIER_1_PASS").sum())
+            tier2 = int((df["triage_tier"] == "TIER_2_REVIEW").sum())
+            tier3 = int((df["triage_tier"] == "TIER_3_QUARANTINE").sum())
 
-        payload = {
-            "total": total,
-            "tier1_pass": tier1,
-            "tier2_review": tier2,
-            "tier3_quarantine": tier3,
-            "quarantine_count": tier3
-        }
-        self._send_json(payload, 200)
+            payload = {
+                "status": "active",
+                "total": total,
+                "tier1_pass": tier1,
+                "tier2_review": tier2,
+                "tier3_quarantine": tier3,
+                "quarantine_count": tier3
+            }
+            self._send_json(payload, 200)
+        except Exception as e:
+            self._send_json({"status": "error", "message": str(e)}, 500)
 
     def _handle_api_decision(self):
         """
