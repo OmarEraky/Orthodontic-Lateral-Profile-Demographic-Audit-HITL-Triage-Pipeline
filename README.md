@@ -51,8 +51,8 @@ Docker ensures 100% reproducible execution across macOS, Linux, and Windows with
 
 ### Step 1: Clone the Repository
 ```bash
-git clone https://github.com/your-org/ortho-demographic-audit.git
-cd ortho-demographic-audit
+git clone https://github.com/OmarEraky/Orthodontic-Lateral-Profile-Demographic-Audit-HITL-Triage-Pipeline.git
+cd Orthodontic-Lateral-Profile-Demographic-Audit-HITL-Triage-Pipeline
 ```
 
 ### Step 2: Place Clinical Dataset
