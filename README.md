@@ -123,7 +123,7 @@ python3 audit_side_profiles.py \
     --nlp-model "pparasurama/raceBERT-ethnicity" \
     --batch-size 32 \
     --device "cpu" \
-    --tau-quarantine 0.70 \
+    --tau-quarantine 0.45 \
     --tau-retain 0.30 \
     --quarantine-mode "copy"
 
@@ -184,13 +184,14 @@ The web dashboard (`audit_outputs/triage_review.html`) provides real-time Human-
 
 | Feature | Description |
 |---|---|
+| **Post-Colonial Asymmetric Shield** | Prevents Black African / diaspora patients with European colonial surnames (*Philips*, *Van Rosen*, *Dumon*, *Garel*) from false quarantine |
 | **Learned Temperature Scaling** | Uses the model's learned `logit_scale` (not a hardcoded τ=100) for calibrated softmax probabilities |
-| **Entropy-Gated Stratification** | Binary Shannon entropy acts as a secondary confidence gate — high-entropy cases near thresholds are routed to clinical review |
+| **Dual-Consensus Quarantine** | Requires both visual European dominance ($P \ge 50\%$) AND onomastic confirmation before auto-quarantine |
 | **Image Integrity Verification** | Truncated, corrupt, and zero-byte images are detected via PIL's `verify()` before inference |
 | **GPU OOM Recovery** | Automatic half-batch retry on CUDA out-of-memory errors |
 | **Atomic Quarantine** | `--quarantine-mode move` uses copy → SHA-256 verify → unlink for data integrity |
 | **NLP Anchoring Bias Mitigation** | Onomastic badges collapsed by default; discordance warnings shown for vision/NLP disagreement |
-| **Balanced Prompt Ensembles** | All 5 demographic cohorts have exactly 5 prompts for uniform centroid estimation |
+| **Balanced Prompt Ensembles** | All 5 demographic cohorts have exactly 5 orthogonal prompts for uniform centroid estimation |
 | **Request Size Limits** | Server rejects POST bodies exceeding 10 MB to prevent OOM |
 | **Reproducibility Metadata** | Summary JSON records Python, PyTorch, OpenCLIP versions, git hash, and learned temperature |
 
@@ -198,12 +199,17 @@ The web dashboard (`audit_outputs/triage_review.html`) provides real-time Human-
 
 ## 📊 8. Decision Stratification Logic
 
-The system evaluates the **Binary Non-European Probability**:
+The system evaluates the **Post-Colonial Asymmetric Gating Protocol**:
 
-$$P(\text{Non-European}) = \sum_{c \neq \text{European}} P(c) = 1 - P(\text{European})$$
+1. **Tier 1 (Auto-Pass):**
+   * Visual Non-European Dominant ($P(\text{Non-Eur}) \ge 58\%$ or dominant non-European class $\ge 35\%$), OR
+   * Rescued by high-confidence Non-European onomastic origin ($P \ge 70\%$).
+   * $\rightarrow$ Verified for clean training cohort.
 
-$$H_{\text{binary}} = -\left( P(\text{Eur}) \log_2 P(\text{Eur}) + P(\text{Non-Eur}) \log_2 P(\text{Non-Eur}) \right)$$
+2. **Tier 3 (Dual-Consensus European Quarantine):**
+   * Visually European Dominant ($P(\text{Eur}) \ge 50\%$) **AND** confirmed by European onomastic origin ($P \ge 50\%$).
+   * $\rightarrow$ Isolated to `Quarantined_European_Profiles/`.
 
-* **Tier 1 (Auto-Pass):** $P(\text{Non-European}) \ge 0.70$ AND $H < 0.65$ $\rightarrow$ Verified for clean training cohort.
-* **Tier 3 (Auto-Quarantine):** $P(\text{European}) \ge 0.70$ AND $H < 0.65$ $\rightarrow$ Isolated to `Quarantined_European_Profiles/`.
-* **Tier 2 (Clinical Review Queue):** $0.30 < P(\text{European}) < 0.70$ OR $H > 0.65$ (entropy-gated) $\rightarrow$ Routed to the interactive dashboard for clinician verification.
+3. **Tier 2 (Clinical Review Queue):**
+   * Borderline or discordant cases (e.g. Visually European but Non-European name like *Bouchachout*).
+   * $\rightarrow$ Routed to the interactive dashboard for clinician verification.

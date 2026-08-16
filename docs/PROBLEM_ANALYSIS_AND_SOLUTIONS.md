@@ -55,27 +55,32 @@ Rather than relying on brittle hardcoded name lists, the pipeline leverages a pr
 
 ---
 
-### 1.3 Onomastic Confirmation Bias in Post-Colonial Clinical Settings
+### 1.3 The Post-Colonial Naming Fallacy & Asymmetric Gating Protocol
 
-While the neural NLP model significantly outperforms dictionary lookups, displaying onomastic predictions alongside clinical images creates a risk of **anchoring bias** in human-in-the-loop review:
+In European clinical datasets (specifically Belgium, with historic colonial ties to DR Congo, Rwanda, and Burundi), **millions of Black African individuals carry French, Belgian, Flemish, or Dutch family names** (e.g., *Philips*, *Van Rosen*, *Dumon*, *Garel*, *Delsaux*).
 
 ```
-                    Anchoring Bias Risk Flow
-                              │
-     ┌────────────────────────┼────────────────────────┐
-     │                        │                        │
-  Clinician sees           NLP badge says          Clinician is primed
-  patient profile          "European (92%)"       by the NLP label and
-  on triage card           prominently displayed   may override their
-                                                   own visual judgment
+                 The Post-Colonial Naming Fallacy
+                                │
+     ┌──────────────────────────┴──────────────────────────┐
+     ▼                                                     ▼
+ [ Black African Patient ]                             [ NLP Onomastic Model ]
+ Visual: 65% African / Non-Eur                        Reads Surname: "Philips" / "Delsaux"
+ Distinct Alveolar Curvature                           Predicts: "98% European"
+     │                                                     │
+     └──────────────────────────┬──────────────────────────┘
+                                ▼
+         [ FATAL FLAW IN NAIVE CONSENSUS GATING ]
+       European Name overrides visual African phenotype 
+         ──> Falsely Quarantines Black Patient! ❌
 ```
 
-**Post-colonial naming creates systematic false signals:** In the Belgium-Emmanuelle Clinic dataset, many non-European patients carry European-origin surnames (e.g., Congolese patients with Flemish/French names) due to colonial civil registries. An uncollapsed NLP badge predicting "European" for these patients could systematically bias clinicians toward false quarantine.
-
-**Mitigations implemented:**
-1. **NLP badges are collapsed by default** — clinicians must click to reveal onomastic predictions, reducing priming before visual assessment.
-2. **Discordance warnings** — when the NLP model predicts European ($P(\text{Eur}|\text{Name}) \ge 0.70$) but the vision model disagrees ($P(\text{Eur}|\text{Image}) < 0.50$), an explicit warning is displayed: *"⚠️ Discordance: NLP suggests European but vision disagrees — possible post-colonial naming."*
-3. **In `manual` mode**, the NLP engine is not loaded at all, providing a pure vision baseline.
+#### The Algorithmic Resolution: Asymmetric Name Trust
+To eliminate this algorithmic bias, the pipeline implements **Asymmetric Name Gating**:
+1. **Asymmetric Rule 1 (Visual Dominance is King):** If visual $P(\text{Non-European}) \ge 55\%$ or any non-European cohort is dominant, **Auto-Quarantine is strictly forbidden**, regardless of European surnames.
+2. **Asymmetric Rule 2 (One-Way Name Rescue):** Non-European names (*Bouchachout*, *Fogaing*, *Annabi*, *Kumar*) CAN rescue borderline visual cases into Tier 1 (Pass). European names can *never* force non-European visual phenotypes into Tier 3 (Quarantine).
+3. **Asymmetric Rule 3 (Dual-Consensus Quarantine):** Auto-Quarantine strictly requires **both visual European dominance ($P \ge 50\%$)** AND **European onomastic confirmation ($P \ge 50\%$)**.
+4. **UI Anchoring Bias Mitigation:** NLP badges are collapsed by default with explicit discordance warnings.
 
 ---
 

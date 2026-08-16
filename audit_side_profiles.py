@@ -52,39 +52,39 @@ NLP_BATCH_CHUNK_SIZE = 256
 # Designed specifically for orthodontic lateral/profile views to avoid frontal bias.
 LATERAL_ORTHODONTIC_PROMPT_CLUSTERS: Dict[str, List[str]] = {
     "European": [
-        "a lateral side-profile photograph of a Caucasian person with European facial features",
-        "a side-view orthodontic portrait of a patient of European Caucasian descent with a prominent nasal bridge and straight profile",
-        "a clinical lateral profile photo of an individual of European Caucasian ancestry",
-        "a profile view of a patient with European cranial morphology and light complexion",
-        "a lateral photograph of a Caucasian patient showing European facial soft-tissue contours"
+        "a lateral side-profile photograph of a Caucasian patient of European descent with light complexion",
+        "a side-view orthodontic portrait of a patient of European Caucasian ancestry with a narrow prominent nasal bridge and straight profile",
+        "a clinical lateral profile photo of an individual of North or Western European Caucasian heritage",
+        "a profile view of a patient with European Caucasian cranial morphology, straight profile, and light skin",
+        "a lateral photograph of a Caucasian patient showing European facial soft-tissue contours and leptorrhine nose"
     ],
     "African": [
-        "a lateral side-profile photograph of a patient of Black African descent",
-        "a side-view orthodontic photo of a patient with African ancestry and bimaxillary facial profile",
-        "a clinical lateral profile portrait of a Black African individual",
-        "a side profile photo of an individual of Sub-Saharan African heritage",
-        "a lateral photograph of a Black patient showing African facial soft-tissue morphology"
+        "a lateral side-profile photograph of a Black patient of Sub-Saharan African descent",
+        "a side-view orthodontic portrait of a patient with African ancestry and characteristic bimaxillary profile",
+        "a clinical lateral profile portrait of a Black individual of West or Central African heritage",
+        "a side profile photo of an individual of African lineage showing alveolar soft-tissue curvature",
+        "a lateral photograph of a Black patient showing African facial and chin soft-tissue morphology"
     ],
     "South_Asian": [
-        "a lateral side-profile photograph of a South Asian person from India, Pakistan, or Bangladesh",
-        "a side-view orthodontic portrait of an Indian or Pakistani patient",
-        "a clinical lateral profile photo of a patient of South Asian descent",
-        "a side profile view of an individual of South Asian ancestry",
-        "a lateral photograph of a South Asian individual showing characteristic facial profile"
+        "a lateral side-profile photograph of a South Asian patient from Pakistan, India, or Bangladesh",
+        "a clinical lateral profile photo of an Indian or Pakistani individual with characteristic soft-tissue contours",
+        "a side-view orthodontic portrait of a patient of South Asian descent showing characteristic sagittal profile line",
+        "a profile photo of a person of Pakistani, Indian, or Punjabi ancestry with warm skin tone",
+        "a lateral photograph of a South Asian individual showing characteristic Desi craniofacial morphology"
     ],
     "MENA": [
-        "a lateral side-profile photograph of a North African or Middle Eastern Arab patient",
-        "a side-view orthodontic portrait of a patient of Maghrebi or Middle Eastern descent",
-        "a clinical lateral profile photo of an individual with North African or Middle Eastern features",
-        "a side profile view of an individual of North African or Arab ancestry",
-        "a lateral photograph of a patient of Middle Eastern or North African heritage showing characteristic profile morphology"
+        "a lateral side-profile photograph of a North African patient of Moroccan, Algerian, or Maghrebi descent",
+        "a clinical lateral profile portrait of an individual of Middle Eastern Arab or Levantine ancestry",
+        "a side-view orthodontic photo of a patient of Berber Amazigh or Maghrebi heritage with olive complexion",
+        "a profile photograph of a North African individual showing Mediterranean Arab facial soft-tissue contours",
+        "a lateral orthodontic portrait of a patient of Middle Eastern, Turkish, or North African descent"
     ],
     "East_Asian": [
-        "a lateral side-profile photograph of an East Asian individual",
-        "a side-view orthodontic photo of a patient of East Asian descent with characteristic lateral profile",
-        "a clinical lateral profile portrait of an individual of East Asian heritage",
-        "a side profile photograph of a person of East Asian descent",
-        "a lateral photograph of an East Asian patient showing characteristic facial soft-tissue contours"
+        "a lateral side-profile photograph of an East Asian individual of Chinese, Korean, or Japanese descent",
+        "a side-view orthodontic photo of a patient of East Asian ancestry with characteristic sagittal profile",
+        "a clinical lateral profile portrait of an individual of East Asian heritage with straight orthognathic profile",
+        "a side profile view of a patient of East Asian descent showing characteristic facial soft-tissue contours",
+        "a lateral orthodontic portrait of an East Asian patient with smooth craniofacial contours and low nasal root"
     ]
 }
 
@@ -302,72 +302,95 @@ def stratify_demographic_decision(
     entropy_binary: float,
     nlp_info: Optional[Dict[str, Any]] = None,
     triage_mode: str = "hybrid",
-    tau_quarantine: float = 0.70,
-    tau_retain: float = 0.30,
-    entropy_review_threshold: float = 0.65
+    tau_quarantine: float = 0.50,
+    tau_retain: float = 0.35,
+    entropy_review_threshold: float = 0.88
 ) -> Tuple[str, str, str]:
     """
-    Binary Three-Tier Stratification Logic supporting:
-    - Mode 'hybrid' (Default): OpenCLIP vision thresholds + NLP name origin metadata badges.
-    - Mode 'name-heuristic': Auto-resolves Tier 2 borderline cases using NLP model certainty.
-    - Mode 'manual': Pure visual baseline.
-
-    Entropy Integration:
-        Binary Shannon entropy (H_binary) is used as a secondary confidence gate.
-        If H_binary > entropy_review_threshold (default 0.65 bits, max 1.0 bit),
-        borderline cases near thresholds are routed to Tier 2 review even if
-        probability thresholds would otherwise auto-resolve them.
+    Post-Colonial Asymmetric Gating Protocol:
+    
+    Fundamental Clinical Rule (Post-Colonial Naming Fallacy Mitigation):
+    In a European/Belgian clinical cohort with African and diverse diaspora patients:
+    - Many Black African patients carry French, Flemish, or Dutch surnames (e.g. Philips, Van Rosen, Dumon, Garel, Delsaux).
+    - European names MUST NEVER be used to auto-quarantine a patient whose visual phenotype is predominantly Non-European!
+    
+    Decision Flow:
+    1. VISUALLY NON-EUROPEAN DOMINANT:
+       If P(Non-Eur) >= 55% OR if the dominant visual class is Non-European (African, S.Asian, MENA, E.Asian):
+       - Quarantine is STRICTLY FORBIDDEN regardless of European surnames.
+       - If P(Non-Eur) >= 58% or dominant Non-Eur >= 35% -> Auto-Pass (Tier 1).
+       - If rescued by a high-confidence Non-European name -> Auto-Pass (Tier 1).
+       - Otherwise -> Held in Tier 2 Review Queue.
+       
+    2. VISUALLY EUROPEAN DOMINANT:
+       If European is the single dominant visual class AND P(Eur) >= tau_quarantine (0.50):
+       - If Name is strongly Non-European (P_NonEur >= 0.70, e.g. Bouchachout) -> Hold in Review (Tier 2).
+       - If Name confirms European (P_Eur >= 0.50) -> Dual-Consensus Auto-Quarantine (Tier 3).
+       - Otherwise -> Held in Review (Tier 2).
     """
     p_eur = probs_dict.get("European", 0.0)
-    p_non_eur = float(np.sum([v for k, v in probs_dict.items() if k != "European"]))
-    non_eur_candidates = {k: v for k, v in probs_dict.items() if k != "European"}
-    dominant_non_eur = max(non_eur_candidates.items(), key=lambda x: x[1])[0] if non_eur_candidates else "Unknown"
+    p_noneur = float(np.sum([v for k, v in probs_dict.items() if k != "European"]))
+    
+    # Identify dominant visual demographic cohort
+    dominant_cohort = max(probs_dict.items(), key=lambda x: x[1])[0]
+    dominant_score = probs_dict[dominant_cohort]
 
-    # Tier 3: High Confidence European (AI Vision)
-    # Entropy gate: if entropy is very high even at threshold, route to review
-    if p_eur >= tau_quarantine:
-        if entropy_binary > entropy_review_threshold and p_eur < (tau_quarantine + 0.10):
-            return "TIER_2_REVIEW", "NEEDS_REVIEW", (
-                f"Entropy-gated review: P_Eur={p_eur*100:.1f}% meets threshold but H={entropy_binary:.3f} bits "
-                f"exceeds confidence gate ({entropy_review_threshold}). Requires clinical verification."
-            )
-        return "TIER_3_QUARANTINE", "AUTO_QUARANTINE", (
-            f"High-confidence European profile (P_Eur={p_eur*100:.1f}%, H={entropy_binary:.3f}). "
-            "Isolated to quarantine directory."
-        )
+    p_name_e = nlp_info.get("p_name_european", 0.5) if nlp_info else 0.5
+    p_name_ne = nlp_info.get("p_name_non_european", 0.5) if nlp_info else 0.5
+    nlp_origin = nlp_info.get("predicted_origin", "Unknown") if nlp_info else "Unknown"
 
-    # Tier 1: High Confidence Non-European (AI Vision)
-    if p_eur <= tau_retain and p_non_eur >= (1.0 - tau_retain):
-        if entropy_binary > entropy_review_threshold and p_non_eur < (1.0 - tau_retain + 0.10):
-            return "TIER_2_REVIEW", "NEEDS_REVIEW", (
-                f"Entropy-gated review: P_NonEur={p_non_eur*100:.1f}% meets threshold but H={entropy_binary:.3f} bits "
-                f"exceeds confidence gate ({entropy_review_threshold}). Requires clinical verification."
-            )
-        return "TIER_1_PASS", "AUTO_PASS", (
-            f"Verified Non-European cohort (P_NonEur={p_non_eur*100:.1f}%, dominant={dominant_non_eur}, H={entropy_binary:.3f}). "
-            "Passed to research cohort."
-        )
-
-    # If Mode is 'name-heuristic', auto-resolve borderline cases using NLP model certainty
-    if triage_mode == "name-heuristic" and nlp_info:
-        sugg = nlp_info.get("nlp_triage_suggestion")
-        detail = nlp_info.get("predicted_origin", "")
-        p_name_e = nlp_info.get("p_name_european", 0.5)
-        p_name_ne = nlp_info.get("p_name_non_european", 0.5)
-
-        if sugg == "QUARANTINE_EUROPEAN" and p_name_e >= 0.70:
-            return "TIER_3_QUARANTINE", "AUTO_QUARANTINE", (
-                f"Auto-Quarantined via NLP Onomastic Model: Name classified as {detail} (P_Eur={p_name_e*100:.1f}%)"
-            )
-        elif sugg == "KEEP_NON_EUROPEAN" and p_name_ne >= 0.70:
+    # =========================================================================
+    # 1. POST-COLONIAL SHIELD: VISUALLY NON-EUROPEAN DOMINANT -> NEVER QUARANTINE!
+    # =========================================================================
+    if dominant_cohort != "European" or p_noneur >= 0.55:
+        # Strong visual Non-European representation (African, Asian, MENA) -> Auto-Pass
+        if p_noneur >= 0.58 or dominant_score >= 0.35:
             return "TIER_1_PASS", "AUTO_PASS", (
-                f"Auto-Passed via NLP Onomastic Model: Name classified as {detail} (P_NonEur={p_name_ne*100:.1f}%)"
+                f"Verified Non-European cohort (Visual Dominance: {dominant_cohort}={dominant_score*100:.1f}%, "
+                f"Total Non-Eur={p_noneur*100:.1f}%, H={entropy_binary:.3f}). Protected by Post-Colonial Shield."
             )
+        # Non-European onomastic name rescue
+        if nlp_info and p_name_ne >= 0.70:
+            return "TIER_1_PASS", "AUTO_PASS", (
+                f"Verified Non-European via Onomastic Consensus: Visual Non-Eur ({p_noneur*100:.1f}%) "
+                f"confirmed by {nlp_origin} ({p_name_ne*100:.1f}%)."
+            )
+        # Residual ambiguity held for clinician
+        return "TIER_2_REVIEW", "NEEDS_REVIEW", (
+            f"Clinical verification required: Visual Non-Eur={p_noneur*100:.1f}% (dominant={dominant_cohort}), "
+            f"H={entropy_binary:.3f} bits. Held for visual confirmation."
+        )
 
-    # Tier 2: True Binary Clinical Ambiguity (Routed to HITL Web Dashboard / Assisted Mode)
+    # =========================================================================
+    # 2. VISUALLY EUROPEAN DOMINANT (dominant_cohort == "European" and P_Eur >= 0.50)
+    # =========================================================================
+    if p_eur >= tau_quarantine:
+        # SAFETY INTERLOCK: If name is clearly Non-European (e.g. Bouchachout, Boujdaini), PROHIBIT quarantine!
+        if nlp_info and p_name_ne >= 0.70:
+            return "TIER_2_REVIEW", "NEEDS_REVIEW", (
+                f"Dual-Signal Discordance Safety Gate: Vision scored European ({p_eur*100:.1f}%) but onomastic model "
+                f"strongly indicates {nlp_origin} ({p_name_ne*100:.1f}% Non-Eur). Auto-quarantine prohibited — held for review."
+            )
+        # DUAL CONSENSUS: Both Vision AND Name confirm European
+        if (not nlp_info) or p_name_e >= 0.50:
+            return "TIER_3_QUARANTINE", "AUTO_QUARANTINE", (
+                f"Dual-Consensus European Isolation: Vision P_Eur={p_eur*100:.1f}%, Onomastic P_Eur={p_name_e*100:.1f}% ({nlp_origin})."
+            )
+        # Vision says European, but Name is ambiguous -> Hold in review
+        return "TIER_2_REVIEW", "NEEDS_REVIEW", (
+            f"Vision flags European ({p_eur*100:.1f}%) but onomastic origin is ambiguous ({nlp_origin}). Held for clinical review."
+        )
+
+    # =========================================================================
+    # 3. BORDERLINE VISUALLY EUROPEAN (0.45 < P_Eur < 0.50)
+    # =========================================================================
+    if nlp_info and p_name_e >= 0.85 and p_eur > 0.45:
+        return "TIER_3_QUARANTINE", "AUTO_QUARANTINE", (
+            f"Quarantined via Strong European Onomastic Consensus: Vision P_Eur={p_eur*100:.1f}%, confirmed by {nlp_origin} ({p_name_e*100:.1f}%)."
+        )
+
     return "TIER_2_REVIEW", "NEEDS_REVIEW", (
-        f"Clinical verification required: Borderline European probability "
-        f"({p_eur*100:.1f}% vs Non-Eur={p_non_eur*100:.1f}%, H={entropy_binary:.3f} bits)"
+        f"Clinical verification required: Borderline European probability ({p_eur*100:.1f}% vs Non-Eur={p_noneur*100:.1f}%, H={entropy_binary:.3f} bits)"
     )
 
 
@@ -384,7 +407,7 @@ def run_batch_demographic_audit(
     device: torch.device,
     batch_size: int = 32,
     triage_mode: str = "hybrid",
-    tau_quarantine: float = 0.70,
+    tau_quarantine: float = 0.45,
     tau_retain: float = 0.30
 ) -> List[Dict[str, Any]]:
     """
@@ -1096,6 +1119,7 @@ def generate_triage_html_dashboard(
                 <div class="badge" id="serverStatusBadge">🔄 Checking Server...</div>
                 <button class="badge" onclick="autoResolveReviewQueue()" style="cursor:pointer; background:#1e1b4b; color:#a5b4fc; border-color:#6366f1;">🪄 Auto-Resolve Review Queue by NLP</button>
                 <button class="badge" onclick="exportUpdatedCSV()" style="cursor:pointer; background:#1e293b; color:#60a5fa; border-color:#3b82f6;">📥 Export Updated CSV</button>
+                <button class="badge" onclick="resetAllTriage()" style="cursor:pointer; background:#3b1111; color:#fca5a5; border-color:#ef4444;" title="Clears browser-cached overrides and reloads fresh audit ledger">🔄 Reset Session</button>
                 <div class="badge">🔒 100% Offline Clinical Data</div>
             </div>
         </header>
@@ -1505,6 +1529,15 @@ def generate_triage_html_dashboard(
             }}
         }}
 
+        function resetAllTriage() {{
+            if (confirm("Reset all manual decisions and reload fresh audit ledger from server/disk?")) {{
+                try {{
+                    localStorage.removeItem('ortho_triage_overrides');
+                }} catch (e) {{}}
+                window.location.reload();
+            }}
+        }}
+
         // Initialization
         initLocalStorage();
         checkServerStatus();
@@ -1579,8 +1612,8 @@ def main():
     parser.add_argument(
         "--tau-quarantine",
         type=float,
-        default=0.70,
-        help="Probability threshold to auto-quarantine European profiles (default: 0.70)."
+        default=0.45,
+        help="Probability threshold to auto-quarantine European profiles (default: 0.45)."
     )
     parser.add_argument(
         "--tau-retain",
