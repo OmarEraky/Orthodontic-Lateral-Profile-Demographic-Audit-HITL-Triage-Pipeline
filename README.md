@@ -153,11 +153,13 @@ The web dashboard (`audit_outputs/triage_review.html`) provides real-time Human-
    * **Quarantined European** (Isolated European profiles)
    * **Review Queue** (Borderline / ambiguous cases)
    * **Verified Non-European** (Auto-passed cohort)
-4. **1-Click Triage Actions:**
+4. **1-Click Triage Actions & Section Bulk Processing:**
+   * **`📦 Export Clean Dataset Folder`**: 1-click batch exports and organizes all verified Non-European profiles directly into `audit_outputs/Clean_Verified_NonEuropean_Dataset/` (`SINIF_I/`, `SINIF_II/`, `SINIF_III/`) without modifying the raw read-only input dataset.
+   * **`✅ Keep All (Verified Non-European)`**: 1-click batch confirms and protects all visible profiles in the Verified Non-European tab, ensuring clean cohort retention and instant disk sync.
+   * **`🚨 Quarantine All (European)`**: 1-click batch confirms and physically isolates all visible profiles in the European Quarantine tab into `audit_outputs/Quarantined_European_Profiles/[Malocclusion_Class]/`.
    * **`🪄 Auto-Resolve Review Queue by NLP`**: 1-click batch resolves borderline cases where the NLP onomastic model has high confidence, instantly synchronizing files on disk.
    * **`⚡ Accept NLP Suggestion`**: 1-click apply on individual cards.
-   * **`Quarantine (Eur)`**: Automatically copies the image to `audit_outputs/Quarantined_European_Profiles/[Malocclusion_Class]/` and updates the CSV ledger on disk.
-   * **`Keep (Non-Eur)`**: Retains the profile in the clean cohort and updates the ledger.
+   * **`Quarantine (Eur)` / `Keep (Non-Eur)`**: Instant single-profile manual decision buttons with real-time physical file copying and advisory file locking.
 5. **Interactive Modal Zoom:** Click any thumbnail to inspect high-resolution craniofacial contours.
 6. **CSV Export:** Download the updated audit ledger at any time via **`📥 Export Updated CSV`**.
 

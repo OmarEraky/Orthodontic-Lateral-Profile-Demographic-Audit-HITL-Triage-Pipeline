@@ -1117,6 +1117,7 @@ def generate_triage_html_dashboard(
             </div>
             <div class="header-badges">
                 <div class="badge" id="serverStatusBadge">🔄 Checking Server...</div>
+                <button class="badge" onclick="exportCleanDatasetFolder()" style="cursor:pointer; background:#064e3b; color:#6ee7b7; border-color:#10b981; font-weight:700;" title="Creates audit_outputs/Clean_Verified_NonEuropean_Dataset/ containing only verified Non-European profiles">📦 Export Clean Dataset Folder</button>
                 <button class="badge" onclick="autoResolveReviewQueue()" style="cursor:pointer; background:#1e1b4b; color:#a5b4fc; border-color:#6366f1;">🪄 Auto-Resolve Review Queue by NLP</button>
                 <button class="badge" onclick="exportUpdatedCSV()" style="cursor:pointer; background:#1e293b; color:#60a5fa; border-color:#3b82f6;">📥 Export Updated CSV</button>
                 <button class="badge" onclick="resetAllTriage()" style="cursor:pointer; background:#3b1111; color:#fca5a5; border-color:#ef4444;" title="Clears browser-cached overrides and reloads fresh audit ledger">🔄 Reset Session</button>
@@ -1158,6 +1159,17 @@ def generate_triage_html_dashboard(
             </div>
             <div class="search-box">
                 <input type="text" id="searchInput" placeholder="Search patient filename or class..." oninput="handleSearch()">
+            </div>
+        </div>
+
+        <!-- Section Bulk Actions Bar -->
+        <div class="batch-actions-bar" id="batchActionsBar" style="display:flex; align-items:center; justify-content:space-between; background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:10px; padding:0.85rem 1.25rem; margin-bottom:1.5rem; flex-wrap:wrap; gap:1rem; box-shadow:0 4px 12px rgba(0,0,0,0.15);">
+            <div style="display:flex; align-items:center; gap:0.75rem;">
+                <span id="batchInfoIcon" style="font-size:1.1rem;">⚡</span>
+                <span style="font-size:0.875rem; font-weight:600; color:var(--text-main);" id="batchInfoText">Batch Actions</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap;" id="batchBtnGroup">
+                <!-- Populated dynamically based on current tab -->
             </div>
         </div>
 
@@ -1253,11 +1265,8 @@ def generate_triage_html_dashboard(
             }}, 3500);
         }}
 
-        function renderGallery() {{
-            const gallery = document.getElementById('galleryGrid');
-            gallery.innerHTML = '';
-
-            const filtered = auditData.filter(item => {{
+        function getFilteredData() {{
+            return auditData.filter(item => {{
                 const matchTab = (currentFilter === 'ALL' || item.triage_tier === currentFilter);
                 const matchSearch = searchQuery === '' || 
                     item.filename.toLowerCase().includes(searchQuery) ||
@@ -1267,6 +1276,67 @@ def generate_triage_html_dashboard(
                     (item.predicted_origin && item.predicted_origin.toLowerCase().includes(searchQuery));
                 return matchTab && matchSearch;
             }});
+        }}
+
+        function updateBatchActionsBar(filteredCount) {{
+            const infoText = document.getElementById('batchInfoText');
+            const infoIcon = document.getElementById('batchInfoIcon');
+            const btnGroup = document.getElementById('batchBtnGroup');
+            if (!btnGroup) return;
+
+            if (currentFilter === 'TIER_1_PASS') {{
+                infoIcon.textContent = '🛡️';
+                infoText.innerHTML = `Verified Non-European Section: <strong>${{filteredCount}}</strong> profiles`;
+                btnGroup.innerHTML = `
+                    <button class="btn-action btn-pass" style="padding:0.55rem 1.25rem; font-size:0.85rem; font-weight:700; cursor:pointer;" onclick="bulkKeepAllFiltered()">
+                        ✅ Keep All (Verified Non-European) (${{filteredCount}})
+                    </button>
+                    <button class="btn-action" style="padding:0.55rem 1.15rem; font-size:0.85rem; font-weight:700; cursor:pointer; background:#064e3b; color:#6ee7b7; border:1px solid #10b981;" onclick="exportCleanDatasetFolder()">
+                        📦 Export Clean Folder (${{filteredCount}})
+                    </button>
+                `;
+            }} else if (currentFilter === 'TIER_3_QUARANTINE') {{
+                infoIcon.textContent = '🚨';
+                infoText.innerHTML = `Quarantined European Section: <strong>${{filteredCount}}</strong> profiles`;
+                btnGroup.innerHTML = `
+                    <button class="btn-action btn-quarantine" style="padding:0.55rem 1.25rem; font-size:0.85rem; font-weight:700; cursor:pointer;" onclick="bulkQuarantineAllFiltered()">
+                        🚨 Quarantine All (European) (${{filteredCount}})
+                    </button>
+                `;
+            }} else if (currentFilter === 'TIER_2_REVIEW') {{
+                infoIcon.textContent = '🔍';
+                infoText.innerHTML = `Clinical Review Queue: <strong>${{filteredCount}}</strong> profiles awaiting review`;
+                btnGroup.innerHTML = `
+                    <button class="btn-action btn-pass" style="padding:0.5rem 1rem; font-size:0.825rem; font-weight:700; cursor:pointer;" onclick="bulkKeepAllFiltered()">
+                        ✅ Keep All in Review Queue (${{filteredCount}})
+                    </button>
+                    <button class="btn-action btn-quarantine" style="padding:0.5rem 1rem; font-size:0.825rem; font-weight:700; cursor:pointer;" onclick="bulkQuarantineAllFiltered()">
+                        🚨 Quarantine All in Review Queue (${{filteredCount}})
+                    </button>
+                    <button class="btn-action btn-nlp-suggest" style="padding:0.5rem 1rem; font-size:0.825rem; font-weight:700; cursor:pointer; margin:0;" onclick="autoResolveReviewQueue()">
+                        🪄 Auto-Resolve by NLP
+                    </button>
+                `;
+            }} else {{
+                infoIcon.textContent = '📋';
+                infoText.innerHTML = `All Profiles: <strong>${{filteredCount}}</strong> records`;
+                btnGroup.innerHTML = `
+                    <button class="btn-action btn-pass" style="padding:0.5rem 1rem; font-size:0.825rem; font-weight:700; cursor:pointer;" onclick="bulkKeepAllFiltered()">
+                        ✅ Keep All Filtered (${{filteredCount}})
+                    </button>
+                    <button class="btn-action btn-quarantine" style="padding:0.5rem 1rem; font-size:0.825rem; font-weight:700; cursor:pointer;" onclick="bulkQuarantineAllFiltered()">
+                        🚨 Quarantine All Filtered (${{filteredCount}})
+                    </button>
+                `;
+            }}
+        }}
+
+        function renderGallery() {{
+            const gallery = document.getElementById('galleryGrid');
+            gallery.innerHTML = '';
+
+            const filtered = getFilteredData();
+            updateBatchActionsBar(filtered.length);
 
             if (filtered.length === 0) {{
                 gallery.innerHTML = `
@@ -1376,6 +1446,91 @@ def generate_triage_html_dashboard(
             renderGallery();
         }}
 
+        async function bulkKeepAllFiltered() {{
+            const filtered = getFilteredData();
+            if (filtered.length === 0) {{
+                showToast('No profiles match current filter!', true);
+                return;
+            }}
+            if (!confirm(`Confirm KEEP ALL: Mark and confirm all ${{filtered.length}} profiles as Verified Non-European (Tier 1)?`)) {{
+                return;
+            }}
+            const filenames = filtered.map(r => r.filename);
+            await executeBulkDecision(filenames, 'TIER_1_PASS', 'Batch Keep All from Web UI');
+        }}
+
+        async function bulkQuarantineAllFiltered() {{
+            const filtered = getFilteredData();
+            if (filtered.length === 0) {{
+                showToast('No profiles match current filter!', true);
+                return;
+            }}
+            if (!confirm(`Confirm QUARANTINE ALL: Isolate and move all ${{filtered.length}} profiles to European Quarantine (Tier 3)?`)) {{
+                return;
+            }}
+            const filenames = filtered.map(r => r.filename);
+            await executeBulkDecision(filenames, 'TIER_3_QUARANTINE', 'Batch Quarantine All from Web UI');
+        }}
+
+        async function executeBulkDecision(filenames, newTier, note) {{
+            showToast(`Processing ${{filenames.length}} profiles...`);
+            
+            // 1. Update Local State & LocalStorage
+            let overrides = JSON.parse(localStorage.getItem('ortho_triage_overrides') || '{{}}');
+            const newStatus = (newTier === 'TIER_1_PASS') ? 'AUTO_PASS' : 'AUTO_QUARANTINE';
+            filenames.forEach(fname => {{
+                const rec = auditData.find(r => r.filename === fname);
+                if (rec) {{
+                    rec.triage_tier = newTier;
+                    rec.triage_status = newStatus;
+                    rec.is_manual_override = true;
+                    overrides[fname] = {{ tier: newTier, status: newStatus, timestamp: new Date().toISOString() }};
+                }}
+            }});
+            localStorage.setItem('ortho_triage_overrides', JSON.stringify(overrides));
+
+            // 2. Sync with Backend Server
+            if (isServerLive) {{
+                try {{
+                    const resp = await fetch('/api/bulk_decision', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{
+                            filenames: filenames,
+                            new_tier: newTier,
+                            note: note
+                        }})
+                    }});
+                    if (resp.ok) {{
+                        const resJson = await resp.json();
+                        if (resJson.success) {{
+                            const actionMsg = newTier === 'TIER_1_PASS' 
+                                ? `✓ Confirmed ${{filenames.length}} profiles as Verified Non-European (Synced to disk)` 
+                                : `✓ Isolated ${{filenames.length}} profiles to Quarantine folder (Synced to disk)`;
+                            showToast(actionMsg);
+                        }}
+                    }} else {{
+                        let errMsg = `HTTP ${{resp.status}}`;
+                        try {{
+                            const errJson = await resp.json();
+                            if (errJson.error) errMsg = errJson.error;
+                        }} catch (e) {{}}
+                        if (resp.status === 404) {{
+                            errMsg = "Server needs restart with --build to enable bulk endpoint. (Saved in browser)";
+                        }}
+                        showToast(`⚠️ ${{errMsg}}`, true);
+                    }}
+                }} catch (err) {{
+                    showToast(`Saved in browser (Server error: ${{err.message}})`, true);
+                }}
+            }} else {{
+                showToast(`✓ ${{filenames.length}} profiles saved to browser storage!`);
+            }}
+
+            updateKPICounters();
+            renderGallery();
+        }}
+
         async function updateDecision(filename, newTier) {{
             const record = auditData.find(r => r.filename === filename);
             if (!record) return;
@@ -1405,10 +1560,19 @@ def generate_triage_html_dashboard(
                             note: 'Manual Triage from Web UI'
                         }})
                     }});
-                    const resJson = await resp.json();
-                    if (resJson.success) {{
-                        const actionMsg = newTier === 'TIER_3_QUARANTINE' ? 'Moved to Quarantined folder' : 'Marked as Non-European';
-                        showToast(`✓ ${{filename}}: ${{actionMsg}} (Synced to disk)`);
+                    if (resp.ok) {{
+                        const resJson = await resp.json();
+                        if (resJson.success) {{
+                            const actionMsg = newTier === 'TIER_3_QUARANTINE' ? 'Moved to Quarantined folder' : 'Marked as Non-European';
+                            showToast(`✓ ${{filename}}: ${{actionMsg}} (Synced to disk)`);
+                        }}
+                    }} else {{
+                        let errMsg = `HTTP ${{resp.status}}`;
+                        try {{
+                            const errJson = await resp.json();
+                            if (errJson.error) errMsg = errJson.error;
+                        }} catch (e) {{}}
+                        showToast(`⚠️ ${{errMsg}} (Saved in browser)`, true);
                     }}
                 }} catch (err) {{
                     showToast(`Saved locally (Server error: ${{err.message}})`, true);
@@ -1497,6 +1661,39 @@ def generate_triage_html_dashboard(
             link.click();
             document.body.removeChild(link);
             showToast("📥 Exported audit_demographic_results_updated.csv");
+        }}
+
+        async function exportCleanDatasetFolder() {{
+            const tier1Count = auditData.filter(r => r.triage_tier === 'TIER_1_PASS').length;
+            if (!confirm(`Export clean verified dataset folder containing ${{tier1Count}} Non-European profiles?\n\nThis will organize files into audit_outputs/Clean_Verified_NonEuropean_Dataset/ without touching raw input data.`)) {{
+                return;
+            }}
+            showToast("📦 Exporting clean verified dataset files...");
+            if (isServerLive) {{
+                try {{
+                    const resp = await fetch('/api/export_clean_dataset', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }}
+                    }});
+                    if (resp.ok) {{
+                        const resJson = await resp.json();
+                        if (resJson.success) {{
+                            showToast(`✓ Successfully exported ${{resJson.exported_clean_count}} clean profiles to audit_outputs/Clean_Verified_NonEuropean_Dataset/`);
+                        }}
+                    }} else {{
+                        let errMsg = `HTTP ${{resp.status}}`;
+                        try {{
+                            const errJson = await resp.json();
+                            if (errJson.error) errMsg = errJson.error;
+                        }} catch (e) {{}}
+                        showToast(`⚠️ ${{errMsg}}`, true);
+                    }}
+                }} catch (err) {{
+                    showToast(`Server error: ${{err.message}}`, true);
+                }}
+            }} else {{
+                showToast("⚠️ Live triage server not connected. Run 'python3 apply_triage_decisions.py --export-clean' in terminal.", true);
+            }}
         }}
 
         function openZoom(src, title) {{

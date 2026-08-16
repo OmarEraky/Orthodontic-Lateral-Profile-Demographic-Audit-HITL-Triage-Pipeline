@@ -4,8 +4,10 @@
 Apply Triage Decisions to Physical Files & Update Quarantine Directory
 ================================================================================
 Synchronizes audit_demographic_results.csv decisions with the physical file system:
-- Copies/moves all TIER_3_QUARANTINE images into audit_outputs/Quarantined_European_Profiles/
+- Copies all TIER_3_QUARANTINE images into audit_outputs/Quarantined_European_Profiles/
 - Removes any TIER_1_PASS images from quarantine if they were previously quarantined
+- Optionally exports a clean verified dataset to audit_outputs/Clean_Verified_NonEuropean_Dataset/
+- Optionally removes quarantined European files from the source Dataset folder
 - Generates the final verified Non-European dataset manifest
 ================================================================================
 """
@@ -31,22 +33,30 @@ OUTPUT_DIR = BASE_DIR / "audit_outputs"
 CSV_PATH = OUTPUT_DIR / "audit_demographic_results.csv"
 JSON_PATH = OUTPUT_DIR / "audit_summary_manifest.json"
 QUARANTINE_DIR = OUTPUT_DIR / "Quarantined_European_Profiles"
+CLEAN_DATASET_DIR = OUTPUT_DIR / "Clean_Verified_NonEuropean_Dataset"
 VERIFIED_MANIFEST_PATH = OUTPUT_DIR / "Verified_NonEuropean_Cohort_Manifest.csv"
 
 
-def apply_physical_quarantine():
+def apply_physical_quarantine(
+    export_clean_dataset: bool = True,
+    remove_quarantined_from_source: bool = False
+):
     if not CSV_PATH.exists():
         logger.error(f"Audit ledger not found at {CSV_PATH}. Run audit_side_profiles.py first.")
         sys.exit(1)
 
     df = pd.read_csv(CSV_PATH)
     QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
+    if export_clean_dataset:
+        CLEAN_DATASET_DIR.mkdir(parents=True, exist_ok=True)
 
     logger.info("=" * 80)
     logger.info("APPLYING CLINICAL TRIAGE DECISIONS TO PHYSICAL FILE SYSTEM")
     logger.info("=" * 80)
     logger.info(f"[*] Reading Audit Ledger: {CSV_PATH}")
     logger.info(f"[*] Quarantine Directory: {QUARANTINE_DIR}")
+    if export_clean_dataset:
+        logger.info(f"[*] Clean Verified Dataset: {CLEAN_DATASET_DIR}")
 
     quarantined_count = 0
     passed_count = 0
@@ -58,6 +68,7 @@ def apply_physical_quarantine():
         orig_src = Path(str(row.get("absolute_path", "")))
         class_folder = str(row.get("class_folder", "")).replace("/", "_").replace(" ", "_")
         dest_file = QUARANTINE_DIR / class_folder / fname
+        clean_file = CLEAN_DATASET_DIR / class_folder / fname
 
         # Path traversal guard
         if not dest_file.resolve().is_relative_to(QUARANTINE_DIR.resolve()):
@@ -68,12 +79,22 @@ def apply_physical_quarantine():
             dest_file.parent.mkdir(parents=True, exist_ok=True)
             if orig_src.exists() and not dest_file.exists():
                 shutil.copy2(orig_src, dest_file)
+            if clean_file.exists():
+                clean_file.unlink()
+            if remove_quarantined_from_source and orig_src.exists() and dest_file.exists():
+                orig_src.unlink()
+                logger.info(f"[-] Removed European image from source dataset: {fname}")
             quarantined_count += 1
 
         elif tier == "TIER_1_PASS":
             # If was in quarantine folder previously, remove it
             if dest_file.exists():
                 dest_file.unlink()
+            # Copy to clean verified dataset folder
+            if export_clean_dataset and orig_src.exists():
+                clean_file.parent.mkdir(parents=True, exist_ok=True)
+                if not clean_file.exists():
+                    shutil.copy2(orig_src, clean_file)
             passed_count += 1
 
         else:
@@ -93,6 +114,8 @@ def apply_physical_quarantine():
                 jdata["stratification_summary"]["tier_2_clinical_review_queue"]["count"] = review_count
                 jdata["stratification_summary"]["tier_3_quarantined_european"]["count"] = quarantined_count
             jdata["verified_manifest"] = str(VERIFIED_MANIFEST_PATH)
+            if export_clean_dataset:
+                jdata["clean_verified_dataset_dir"] = str(CLEAN_DATASET_DIR)
             with open(JSON_PATH, "w", encoding="utf-8") as f:
                 json.dump(jdata, f, indent=2)
         except Exception as e:
@@ -105,8 +128,19 @@ def apply_physical_quarantine():
     logger.info(f"[*] Ambiguous Review Queue Remaining:       {review_count} ({review_count/len(df)*100:.1f}%)")
     logger.info(f"[*] Quarantined European Profiles on Disk:   {quarantined_count} ({quarantined_count/len(df)*100:.1f}%)")
     logger.info(f"[*] Verified Clean Cohort Manifest:          {VERIFIED_MANIFEST_PATH}")
+    if export_clean_dataset:
+        logger.info(f"[*] Clean Verified Dataset Export:           {CLEAN_DATASET_DIR}")
     logger.info("=" * 80)
 
 
 if __name__ == "__main__":
-    apply_physical_quarantine()
+    import argparse
+    parser = argparse.ArgumentParser(description="Apply demographic triage decisions to disk")
+    parser.add_argument("--export-clean", action="store_true", default=True, help="Export a clean dataset directory containing only verified Non-European profiles")
+    parser.add_argument("--delete-from-source", action="store_true", default=False, help="Permanently delete quarantined European files from the source Dataset folder")
+    args = parser.parse_args()
+
+    apply_physical_quarantine(
+        export_clean_dataset=args.export_clean,
+        remove_quarantined_from_source=args.delete_from_source
+    )

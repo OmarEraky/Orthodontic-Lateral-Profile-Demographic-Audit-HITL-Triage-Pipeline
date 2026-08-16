@@ -113,11 +113,13 @@ The pipeline supports three distinct execution modes via `--triage-mode`:
 
 ---
 
-### Component 5: Live Triage Server & Two-Way Sync
-* **Interactive UI:** Standalone dashboard (`triage_review.html`) with KPI metrics, zoom modal, search filters, collapsible onomastic badges, **Reset Session** button, and 1-click triage actions.
-* **Physical File Management:** Local Python server (`triage_server.py`) handles real-time copying/moving of files into quarantine and updating CSV ledgers upon clinician decision.
-* **Batch Auto-Resolution:** Dedicated `POST /api/auto_resolve_names` endpoint enables 1-click batch application of high-confidence NLP suggestions to disk.
-* **Manifest Synchronization:** Dedicated CLI tool (`apply_triage_decisions.py`) produces final verified cohort manifests.
+### Component 5: Interactive HITL Dashboard & Live Server
+* **Architecture:** Python HTTP Server (`triage_server.py`) serving a self-contained dashboard (`triage_review.html`).
+* **Live Synchronization:** Real-time physical file copying and CSV updates via `POST /api/decision` and `POST /api/bulk_decision`.
+* **Section Batch Processing:** 1-click **Keep All** and **Quarantine All** actions to rapidly triage entire filtered views.
+* **Clean Dataset Export:** 1-click **Export Clean Dataset Folder** (`POST /api/export_clean_dataset`) creates `audit_outputs/Clean_Verified_NonEuropean_Dataset/` without modifying raw data.
+* **Anchoring Mitigation:** NLP onomastic badges are collapsed by default; discordance alerts warn when vision and NLP disagree.
+* **Manifest Synchronization:** Dedicated CLI tool (`apply_triage_decisions.py`) produces final verified cohort manifests (`Verified_NonEuropean_Cohort_Manifest.csv`).
 
 ---
 

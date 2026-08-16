@@ -25,6 +25,10 @@ services:
       - ./Dataset:/app/Dataset:ro
       # Mount outputs directory (read-write for CSV manifests & quarantine isolation)
       - ./audit_outputs:/app/audit_outputs:rw
+      # Live-mount application scripts for instant updates
+      - ./triage_server.py:/app/triage_server.py:ro
+      - ./audit_side_profiles.py:/app/audit_side_profiles.py:ro
+      - ./apply_triage_decisions.py:/app/apply_triage_decisions.py:ro
       # Persistent cache for OpenCLIP foundation weights (avoids re-downloading)
       - model_cache:/app/.cache:rw
     environment:
@@ -46,6 +50,9 @@ services:
     volumes:
       - ./Dataset:/app/Dataset:ro
       - ./audit_outputs:/app/audit_outputs:rw
+      - ./triage_server.py:/app/triage_server.py:ro
+      - ./audit_side_profiles.py:/app/audit_side_profiles.py:ro
+      - ./apply_triage_decisions.py:/app/apply_triage_decisions.py:ro
       - model_cache:/app/.cache:rw
     command: [
       "python3", "audit_side_profiles.py",

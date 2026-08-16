@@ -47,7 +47,7 @@ MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024
 VALID_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 # Filename validation regex (alphanumeric, hyphens, underscores, dots, spaces)
-FILENAME_PATTERN = re.compile(r'^[\w\-. ]+\.(jpg|jpeg|png|bmp|tif|tiff|webp)$', re.IGNORECASE)
+FILENAME_PATTERN = re.compile(r'^[^/\\:\0]+\.(jpg|jpeg|png|bmp|tif|tiff|webp|dcm)$', re.IGNORECASE)
 
 # Paths
 BASE_DIR = Path(__file__).resolve().parent
@@ -56,6 +56,8 @@ OUTPUT_DIR = BASE_DIR / "audit_outputs"
 CSV_PATH = OUTPUT_DIR / "audit_demographic_results.csv"
 JSON_PATH = OUTPUT_DIR / "audit_summary_manifest.json"
 QUARANTINE_DIR = OUTPUT_DIR / "Quarantined_European_Profiles"
+CLEAN_DATASET_DIR = OUTPUT_DIR / "Clean_Verified_NonEuropean_Dataset"
+VERIFIED_MANIFEST_PATH = OUTPUT_DIR / "Verified_NonEuropean_Cohort_Manifest.csv"
 HTML_PATH = OUTPUT_DIR / "triage_review.html"
 
 
@@ -104,6 +106,10 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
             self._handle_api_decision()
             return
         
+        if parsed_url.path == "/api/bulk_decision":
+            self._handle_api_bulk_decision()
+            return
+
         if parsed_url.path == "/api/bulk_quarantine":
             self._handle_api_bulk_quarantine()
             return
@@ -112,7 +118,11 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
             self._handle_api_auto_resolve_names()
             return
 
-        self.send_error(404, "API endpoint not found")
+        if parsed_url.path == "/api/export_clean_dataset":
+            self._handle_api_export_clean_dataset()
+            return
+
+        self._send_json({"error": f"API endpoint not found: {parsed_url.path}"}, 404)
 
     def _handle_api_status(self):
         """Returns current audit stats and dataset manifest."""
@@ -156,13 +166,16 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
 
     @staticmethod
     def _validate_filename(filename: str) -> bool:
-        """Validates filename against traversal attacks (§1.5)."""
-        if not filename or not FILENAME_PATTERN.match(filename):
+        """Validates filename against traversal attacks while supporting unicode & punctuation clinical names (§1.5)."""
+        if not filename or not isinstance(filename, str):
             return False
-        # Reject any path traversal components
-        if ".." in filename or "/" in filename or "\\" in filename:
+        # Reject any path traversal or directory components
+        if ".." in filename or "/" in filename or "\\" in filename or "\0" in filename:
             return False
-        return True
+        base = os.path.basename(filename)
+        if base != filename:
+            return False
+        return bool(FILENAME_PATTERN.match(filename))
 
     @staticmethod
     def _safe_quarantine_path(filename: str, class_folder: str) -> Path:
@@ -185,15 +198,24 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
                 fcntl.flock(lockfile, fcntl.LOCK_UN)
 
     @staticmethod
-    def _locked_csv_read() -> pd.DataFrame:
-        """Reads CSV with shared file lock for consistency (§3.1)."""
-        with open(CSV_PATH, 'r') as lockfile:
-            fcntl.flock(lockfile, fcntl.LOCK_SH)
-            try:
-                df = pd.read_csv(CSV_PATH)
-            finally:
-                fcntl.flock(lockfile, fcntl.LOCK_UN)
-        return df
+    def _update_json_summary(df: pd.DataFrame):
+        """Updates audit_summary_manifest.json with live counts (§3.1)."""
+        if not JSON_PATH.exists():
+            return
+        try:
+            tier1 = int((df["triage_tier"] == "TIER_1_PASS").sum())
+            tier2 = int((df["triage_tier"] == "TIER_2_REVIEW").sum())
+            tier3 = int((df["triage_tier"] == "TIER_3_QUARANTINE").sum())
+            with open(JSON_PATH, "r", encoding="utf-8") as f:
+                jdata = json.load(f)
+            if "stratification_summary" in jdata:
+                jdata["stratification_summary"]["tier_1_verified_non_european"]["count"] = tier1
+                jdata["stratification_summary"]["tier_2_clinical_review_queue"]["count"] = tier2
+                jdata["stratification_summary"]["tier_3_quarantined_european"]["count"] = tier3
+            with open(JSON_PATH, "w", encoding="utf-8") as f:
+                json.dump(jdata, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to update JSON summary: {e}")
 
     def _handle_api_decision(self):
         """
@@ -308,15 +330,25 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
             logger.error(f"Decision API error: {e}")
             self._send_json({"error": str(e)}, 500)
 
-    def _handle_api_bulk_quarantine(self):
-        """Quarantines a list of filenames simultaneously with file locking."""
+    def _handle_api_bulk_decision(self):
+        """
+        Batch-updates a list of filenames to TIER_1_PASS or TIER_3_QUARANTINE.
+        Performs physical file copying or unlinking on disk, writes CSV atomically with fcntl locking,
+        and updates summary manifest.
+        """
         try:
             body_data = self._read_request_body().decode("utf-8")
             data = json.loads(body_data)
             filenames = data.get("filenames", [])
+            new_tier = data.get("new_tier")  # TIER_1_PASS or TIER_3_QUARANTINE
+            custom_note = data.get("note", f"Bulk action: {new_tier}")
 
-            if not filenames:
-                self._send_json({"error": "No filenames provided"}, 400)
+            if not filenames or not new_tier:
+                self._send_json({"error": "Missing filenames or new_tier"}, 400)
+                return
+
+            if new_tier not in ["TIER_1_PASS", "TIER_3_QUARANTINE"]:
+                self._send_json({"error": f"Invalid new_tier: {new_tier}"}, 400)
                 return
 
             # Validate all filenames before proceeding
@@ -327,30 +359,82 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
 
             df = self._locked_csv_read()
             count_updated = 0
+            quarantined_count = 0
+            passed_count = 0
 
             for fname in filenames:
                 idx = df[df["filename"] == fname].index
                 if len(idx) > 0:
                     r_idx = idx[0]
-                    df.at[r_idx, "triage_tier"] = "TIER_3_QUARANTINE"
-                    df.at[r_idx, "triage_status"] = "AUTO_QUARANTINE"
-                    
+                    df.at[r_idx, "triage_tier"] = new_tier
+                    df.at[r_idx, "triage_status"] = "AUTO_PASS" if new_tier == "TIER_1_PASS" else "AUTO_QUARANTINE"
+                    df.at[r_idx, "audit_notes"] = f"Bulk Decision: {new_tier} ({custom_note})"
+
                     orig_src = Path(df.at[r_idx, "absolute_path"])
                     class_folder = str(df.at[r_idx, "class_folder"])
                     dest_file = self._safe_quarantine_path(fname, class_folder)
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                    if orig_src.exists():
-                        shutil.copy2(orig_src, dest_file)
+
+                    if new_tier == "TIER_3_QUARANTINE":
+                        dest_file.parent.mkdir(parents=True, exist_ok=True)
+                        if orig_src.exists() and not dest_file.exists():
+                            shutil.copy2(orig_src, dest_file)
+                        quarantined_count += 1
+                    elif new_tier == "TIER_1_PASS":
+                        if dest_file.exists():
+                            try:
+                                dest_file.unlink()
+                            except Exception as e:
+                                logger.warning(f"Failed to unlink {dest_file}: {e}")
+                        passed_count += 1
+
                     count_updated += 1
 
             self._atomic_csv_write(df)
-            self._send_json({"success": True, "count_quarantined": count_updated}, 200)
+
+            # Update JSON summary
+            tier1 = int((df["triage_tier"] == "TIER_1_PASS").sum())
+            tier2 = int((df["triage_tier"] == "TIER_2_REVIEW").sum())
+            tier3 = int((df["triage_tier"] == "TIER_3_QUARANTINE").sum())
+
+            # Recount quarantine files on disk
+            quarantine_disk_count = sum(
+                1 for f in QUARANTINE_DIR.rglob("*")
+                if f.suffix.lower() in VALID_IMAGE_EXTENSIONS
+            ) if QUARANTINE_DIR.exists() else 0
+
+            if JSON_PATH.exists():
+                try:
+                    with open(JSON_PATH, "r") as f:
+                        jdata = json.load(f)
+                    jdata["stratification_summary"]["tier_1_verified_non_european"]["count"] = tier1
+                    jdata["stratification_summary"]["tier_2_clinical_review_queue"]["count"] = tier2
+                    jdata["stratification_summary"]["tier_3_quarantined_european"]["count"] = tier3
+                    jdata["stratification_summary"]["tier_3_quarantined_european"]["files_on_disk"] = quarantine_disk_count
+                    with open(JSON_PATH, "w") as f:
+                        json.dump(jdata, f, indent=2)
+                except Exception as e:
+                    logger.warning(f"Failed to update JSON summary: {e}")
+
+            self._send_json({
+                "success": True,
+                "total_updated": count_updated,
+                "quarantined": quarantined_count,
+                "passed": passed_count,
+                "tier1_total": tier1,
+                "tier2_total": tier2,
+                "tier3_total": tier3,
+                "quarantine_disk_count": quarantine_disk_count
+            }, 200)
 
         except ValueError as ve:
             self._send_json({"error": str(ve)}, 413 if "too large" in str(ve) else 400)
         except Exception as e:
-            logger.error(f"Bulk quarantine API error: {e}")
+            logger.error(f"Bulk decision API error: {e}")
             self._send_json({"error": str(e)}, 500)
+
+    def _handle_api_bulk_quarantine(self):
+        """Quarantines a list of filenames simultaneously with file locking (legacy wrapper)."""
+        self._handle_api_bulk_decision()
 
     def _handle_api_auto_resolve_names(self):
         """
@@ -436,6 +520,78 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
         except Exception as e:
             logger.error(f"Auto-resolve API error: {e}")
             self._send_json({"error": str(e)}, 500)
+
+    def _handle_api_export_clean_dataset(self):
+        """
+        Exports clean verified non-European profiles into a dedicated folder
+        audit_outputs/Clean_Verified_NonEuropean_Dataset/ and writes manifest.
+        """
+        try:
+            if not CSV_PATH.exists():
+                self._send_json({"error": "CSV ledger not found"}, 404)
+                return
+
+            with open(CSV_PATH, 'r+') as lockfile:
+                fcntl.flock(lockfile, fcntl.LOCK_EX)
+                try:
+                    df = pd.read_csv(CSV_PATH)
+                    
+                    CLEAN_DATASET_DIR.mkdir(parents=True, exist_ok=True)
+                    QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
+                    
+                    passed_count = 0
+                    quarantined_count = 0
+
+                    for idx, row in df.iterrows():
+                        tier = row.get("triage_tier")
+                        fname = str(row.get("filename", ""))
+                        if not self._validate_filename(fname):
+                            continue
+                            
+                        orig_src = Path(str(row.get("absolute_path", "")))
+                        class_folder = str(row.get("class_folder", "")).replace("/", "_").replace(" ", "_")
+                        clean_dest = CLEAN_DATASET_DIR / class_folder / fname
+                        quar_dest = QUARANTINE_DIR / class_folder / fname
+
+                        if tier == "TIER_1_PASS":
+                            if orig_src.exists():
+                                clean_dest.parent.mkdir(parents=True, exist_ok=True)
+                                if not clean_dest.exists():
+                                    shutil.copy2(orig_src, clean_dest)
+                            if quar_dest.exists():
+                                quar_dest.unlink()
+                            passed_count += 1
+
+                        elif tier == "TIER_3_QUARANTINE":
+                            if orig_src.exists():
+                                quar_dest.parent.mkdir(parents=True, exist_ok=True)
+                                if not quar_dest.exists():
+                                    shutil.copy2(orig_src, quar_dest)
+                            if clean_dest.exists():
+                                clean_dest.unlink()
+                            quarantined_count += 1
+
+                    # Write verified cohort manifest
+                    verified_df = df[df["triage_tier"] == "TIER_1_PASS"].copy()
+                    verified_df.to_csv(VERIFIED_MANIFEST_PATH, index=False)
+
+                    # Update summary manifest
+                    self._update_json_summary(df)
+
+                finally:
+                    fcntl.flock(lockfile, fcntl.LOCK_UN)
+
+            self._send_json({
+                "success": True,
+                "exported_clean_count": passed_count,
+                "quarantined_count": quarantined_count,
+                "clean_dir": str(CLEAN_DATASET_DIR),
+                "manifest": str(VERIFIED_MANIFEST_PATH)
+            }, 200)
+
+        except Exception as e:
+            logger.error(f"Failed to export clean dataset: {e}", exc_info=True)
+            self._send_json({"error": f"Export failed: {str(e)}"}, 500)
 
     def _send_json(self, data: Dict[str, Any], status: int = 200):
         body = json.dumps(data).encode("utf-8")
