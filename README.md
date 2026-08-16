@@ -34,8 +34,7 @@ This pipeline employs **OpenCLIP (ViT-B-32 / ViT-L-14)** with **domain-engineere
 .
 ├── docs/
 │   ├── PROBLEM_ANALYSIS_AND_SOLUTIONS.md # Deep first-principles modality analysis
-│   ├── PIPELINE_ARCHITECTURE.md          # Technical design & mathematical formulation
-│   └── AUDIT_DELIVERY_REPORT.md          # Complete audit results & quarantine ledger
+│   └── PIPELINE_ARCHITECTURE.md          # Technical design & mathematical formulation
 ├── audit_side_profiles.py                # Core OpenCLIP batch audit & inference engine
 ├── triage_server.py                      # Local HTTP server for live triage & physical file sync
 ├── apply_triage_decisions.py             # CLI tool to apply triage decisions to physical files
@@ -50,7 +49,6 @@ This pipeline employs **OpenCLIP (ViT-B-32 / ViT-L-14)** with **domain-engineere
 ### 📖 Technical Documentation:
 * [**Modality & Problem Analysis**](docs/PROBLEM_ANALYSIS_AND_SOLUTIONS.md): Detailed examination of why 2D landmarking fails on lateral profiles and evaluation of alternative architectures.
 * [**Pipeline Architecture & Math**](docs/PIPELINE_ARCHITECTURE.md): Mathematical formulations of prompt embeddings, cosine similarity, temperature scaling, and binary Shannon entropy.
-* [**Audit Delivery Report**](docs/AUDIT_DELIVERY_REPORT.md): Summary of audited malocclusion cohorts, quarantined records, and clean dataset manifests.
 
 ---
 
