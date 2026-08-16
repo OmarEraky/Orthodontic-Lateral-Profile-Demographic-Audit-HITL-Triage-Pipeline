@@ -5,19 +5,49 @@ Orthodontic Demographic Triage Live Server & Physical File Manager
 ================================================================================
 Serves the interactive triage dashboard and handles real-time physical file
 movements, quarantine directory synchronization, and CSV/JSON manifest updates.
+
+Security Hardening:
+- Restricted directory serving (only audit_outputs/ and Dataset/ accessible)
+- Path traversal protection on all API endpoints
+- File-level advisory locking (fcntl) for concurrent CSV safety
+- Request body size ceiling (10 MB) to prevent OOM
 ================================================================================
 """
 
 import os
+import re
 import sys
 import json
+import fcntl
 import shutil
+import logging
 import urllib.parse
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from typing import Dict, Any
 
 import pandas as pd
+
+# ==============================================================================
+# GLOBAL CONFIGURATION
+# ==============================================================================
+
+# Structured logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger("triage_server")
+
+# Maximum allowed request body size (10 MB) to prevent OOM attacks
+MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024
+
+# Valid image extensions for quarantine disk recounting
+VALID_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+
+# Filename validation regex (alphanumeric, hyphens, underscores, dots, spaces)
+FILENAME_PATTERN = re.compile(r'^[\w\-. ]+\.(jpg|jpeg|png|bmp|tif|tiff|webp)$', re.IGNORECASE)
 
 # Paths
 BASE_DIR = Path(__file__).resolve().parent
@@ -32,9 +62,26 @@ HTML_PATH = OUTPUT_DIR / "triage_review.html"
 class TriageRequestHandler(SimpleHTTPRequestHandler):
     """
     Handles HTTP requests for the Triage Dashboard with live physical file operations.
+    Security: Only serves files from audit_outputs/ and Dataset/ (not the full project tree).
     """
+
+    # Whitelisted directories relative to BASE_DIR that may be served
+    _ALLOWED_PREFIXES = [
+        str(OUTPUT_DIR.resolve()),
+        str((BASE_DIR / "Dataset").resolve())
+    ]
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(BASE_DIR), **kwargs)
+
+    def translate_path(self, path):
+        """Override: restrict file serving to whitelisted directories only (§3.3)."""
+        resolved = Path(super().translate_path(path)).resolve()
+        for prefix in self._ALLOWED_PREFIXES:
+            if str(resolved).startswith(prefix):
+                return str(resolved)
+        # Block access to all other files (source code, Dockerfile, .git, etc.)
+        return str(OUTPUT_DIR / "__blocked__")
 
     def do_GET(self):
         # Redirect root to triage_review.html
@@ -100,13 +147,61 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
         except Exception as e:
             self._send_json({"status": "error", "message": str(e)}, 500)
 
+    def _read_request_body(self) -> bytes:
+        """Reads and validates request body size (§3.2)."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length > MAX_REQUEST_BODY_BYTES:
+            raise ValueError(f"Request body too large: {content_length} bytes (max {MAX_REQUEST_BODY_BYTES})")
+        return self.rfile.read(content_length)
+
+    @staticmethod
+    def _validate_filename(filename: str) -> bool:
+        """Validates filename against traversal attacks (§1.5)."""
+        if not filename or not FILENAME_PATTERN.match(filename):
+            return False
+        # Reject any path traversal components
+        if ".." in filename or "/" in filename or "\\" in filename:
+            return False
+        return True
+
+    @staticmethod
+    def _safe_quarantine_path(filename: str, class_folder: str) -> Path:
+        """Constructs and validates quarantine destination path (§1.5)."""
+        clean_class = class_folder.replace("/", "_").replace(" ", "_")
+        dest = QUARANTINE_DIR / clean_class / filename
+        # Verify the resolved path is within QUARANTINE_DIR
+        if not dest.resolve().is_relative_to(QUARANTINE_DIR.resolve()):
+            raise ValueError(f"Path traversal rejected: {dest}")
+        return dest
+
+    @staticmethod
+    def _atomic_csv_write(df: pd.DataFrame):
+        """Writes CSV with file-level advisory lock for concurrent safety (§3.1)."""
+        with open(CSV_PATH, 'r+') as lockfile:
+            fcntl.flock(lockfile, fcntl.LOCK_EX)
+            try:
+                df.to_csv(CSV_PATH, index=False)
+            finally:
+                fcntl.flock(lockfile, fcntl.LOCK_UN)
+
+    @staticmethod
+    def _locked_csv_read() -> pd.DataFrame:
+        """Reads CSV with shared file lock for consistency (§3.1)."""
+        with open(CSV_PATH, 'r') as lockfile:
+            fcntl.flock(lockfile, fcntl.LOCK_SH)
+            try:
+                df = pd.read_csv(CSV_PATH)
+            finally:
+                fcntl.flock(lockfile, fcntl.LOCK_UN)
+        return df
+
     def _handle_api_decision(self):
         """
         Updates a single patient record and physically moves/copies the file on disk.
+        Includes path traversal protection, filename validation, and CSV file locking.
         """
         try:
-            content_length = int(self.headers.get("Content-Length", 0))
-            body_data = self.rfile.read(content_length).decode("utf-8")
+            body_data = self._read_request_body().decode("utf-8")
             data = json.loads(body_data)
 
             filename = data.get("filename")
@@ -117,11 +212,17 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
                 self._send_json({"error": "Missing filename or new_tier"}, 400)
                 return
 
+            # §1.5: Validate filename against path traversal
+            if not self._validate_filename(filename):
+                self._send_json({"error": "Invalid filename format"}, 400)
+                return
+
             if not CSV_PATH.exists():
                 self._send_json({"error": "CSV ledger not found"}, 404)
                 return
 
-            df = pd.read_csv(CSV_PATH)
+            # §3.1: Read CSV with file lock
+            df = self._locked_csv_read()
             idx = df[df["filename"] == filename].index
 
             if len(idx) == 0:
@@ -131,16 +232,19 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
             row_idx = idx[0]
             old_tier = df.at[row_idx, "triage_tier"]
             class_folder = str(df.at[row_idx, "class_folder"])
-            clean_class = class_folder.replace("/", "_").replace(" ", "_")
             
             orig_src = Path(df.at[row_idx, "absolute_path"])
-            quarantine_dest = QUARANTINE_DIR / clean_class / filename
+
+            # §1.5: Construct and validate quarantine path
+            quarantine_dest = self._safe_quarantine_path(filename, class_folder)
 
             # Update dataframe row
             df.at[row_idx, "triage_tier"] = new_tier
             df.at[row_idx, "triage_status"] = "AUTO_PASS" if new_tier == "TIER_1_PASS" else "AUTO_QUARANTINE"
             df.at[row_idx, "audit_notes"] = f"Manual Clinical Decision: {new_tier} ({custom_note})"
-            df.to_csv(CSV_PATH, index=False)
+            
+            # §3.1: Write CSV with exclusive file lock
+            self._atomic_csv_write(df)
 
             # Physical file operation
             action_performed = "none"
@@ -166,8 +270,11 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
             tier2 = int((df["triage_tier"] == "TIER_2_REVIEW").sum())
             tier3 = int((df["triage_tier"] == "TIER_3_QUARANTINE").sum())
 
-            # Recount quarantine files on disk
-            quarantine_disk_count = len(list(QUARANTINE_DIR.rglob("*.jpg"))) if QUARANTINE_DIR.exists() else 0
+            # §3.4: Recount quarantine files on disk (all valid image extensions)
+            quarantine_disk_count = sum(
+                1 for f in QUARANTINE_DIR.rglob("*")
+                if f.suffix.lower() in VALID_IMAGE_EXTENSIONS
+            ) if QUARANTINE_DIR.exists() else 0
 
             summary = {
                 "total_audited": len(df),
@@ -190,26 +297,35 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
                     jdata["stratification_summary"]["tier_3_quarantined_european"]["count"] = tier3
                     with open(JSON_PATH, "w") as f:
                         json.dump(jdata, f, indent=2)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to update JSON summary: {e}")
 
             self._send_json({"success": True, "summary": summary}, 200)
 
+        except ValueError as ve:
+            self._send_json({"error": str(ve)}, 413 if "too large" in str(ve) else 400)
         except Exception as e:
+            logger.error(f"Decision API error: {e}")
             self._send_json({"error": str(e)}, 500)
 
     def _handle_api_bulk_quarantine(self):
-        """Quarantines a list of filenames simultaneously."""
+        """Quarantines a list of filenames simultaneously with file locking."""
         try:
-            content_length = int(self.headers.get("Content-Length", 0))
-            data = json.loads(self.rfile.read(content_length).decode("utf-8"))
+            body_data = self._read_request_body().decode("utf-8")
+            data = json.loads(body_data)
             filenames = data.get("filenames", [])
 
             if not filenames:
                 self._send_json({"error": "No filenames provided"}, 400)
                 return
 
-            df = pd.read_csv(CSV_PATH)
+            # Validate all filenames before proceeding
+            for fname in filenames:
+                if not self._validate_filename(fname):
+                    self._send_json({"error": f"Invalid filename: {fname}"}, 400)
+                    return
+
+            df = self._locked_csv_read()
             count_updated = 0
 
             for fname in filenames:
@@ -220,33 +336,37 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
                     df.at[r_idx, "triage_status"] = "AUTO_QUARANTINE"
                     
                     orig_src = Path(df.at[r_idx, "absolute_path"])
-                    class_folder = str(df.at[r_idx, "class_folder"]).replace("/", "_").replace(" ", "_")
-                    dest_file = QUARANTINE_DIR / class_folder / fname
+                    class_folder = str(df.at[r_idx, "class_folder"])
+                    dest_file = self._safe_quarantine_path(fname, class_folder)
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     if orig_src.exists():
                         shutil.copy2(orig_src, dest_file)
                     count_updated += 1
 
-            df.to_csv(CSV_PATH, index=False)
+            self._atomic_csv_write(df)
             self._send_json({"success": True, "count_quarantined": count_updated}, 200)
 
+        except ValueError as ve:
+            self._send_json({"error": str(ve)}, 413 if "too large" in str(ve) else 400)
         except Exception as e:
+            logger.error(f"Bulk quarantine API error: {e}")
             self._send_json({"error": str(e)}, 500)
 
     def _handle_api_auto_resolve_names(self):
         """
         Batch auto-resolves ambiguous records using high-confidence NLP onomastic suggestions.
+        Includes file locking and path validation.
         """
         try:
-            content_length = int(self.headers.get("Content-Length", 0))
-            data = json.loads(self.rfile.read(content_length).decode("utf-8"))
+            body_data = self._read_request_body().decode("utf-8")
+            data = json.loads(body_data)
             resolutions = data.get("resolutions", [])
 
             if not resolutions:
                 self._send_json({"error": "No resolutions provided"}, 400)
                 return
 
-            df = pd.read_csv(CSV_PATH)
+            df = self._locked_csv_read()
             updated_count = 0
             quarantined_count = 0
             passed_count = 0
@@ -256,6 +376,9 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
                 new_tier = res.get("tier") # TIER_1_PASS or TIER_3_QUARANTINE
                 reason = res.get("reason", "Auto-resolved via NLP onomastic model")
 
+                if not self._validate_filename(fname):
+                    continue
+
                 idx = df[df["filename"] == fname].index
                 if len(idx) > 0:
                     r_idx = idx[0]
@@ -264,8 +387,8 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
                     df.at[r_idx, "audit_notes"] = f"NLP Onomastic Decision: {new_tier} ({reason})"
 
                     orig_src = Path(df.at[r_idx, "absolute_path"])
-                    class_folder = str(df.at[r_idx, "class_folder"]).replace("/", "_").replace(" ", "_")
-                    dest_file = QUARANTINE_DIR / class_folder / fname
+                    class_folder = str(df.at[r_idx, "class_folder"])
+                    dest_file = self._safe_quarantine_path(fname, class_folder)
 
                     if new_tier == "TIER_3_QUARANTINE":
                         dest_file.parent.mkdir(parents=True, exist_ok=True)
@@ -279,7 +402,7 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
 
                     updated_count += 1
 
-            df.to_csv(CSV_PATH, index=False)
+            self._atomic_csv_write(df)
 
             # Update JSON summary
             tier1 = int((df["triage_tier"] == "TIER_1_PASS").sum())
@@ -295,8 +418,8 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
                     jdata["stratification_summary"]["tier_3_quarantined_european"]["count"] = tier3
                     with open(JSON_PATH, "w") as f:
                         json.dump(jdata, f, indent=2)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to update JSON summary: {e}")
 
             self._send_json({
                 "success": True,
@@ -308,7 +431,10 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
                 "tier3_total": tier3
             }, 200)
 
+        except ValueError as ve:
+            self._send_json({"error": str(ve)}, 413 if "too large" in str(ve) else 400)
         except Exception as e:
+            logger.error(f"Auto-resolve API error: {e}")
             self._send_json({"error": str(e)}, 500)
 
     def _send_json(self, data: Dict[str, Any], status: int = 200):
@@ -333,16 +459,17 @@ class TriageRequestHandler(SimpleHTTPRequestHandler):
 def run_server(host: str = "0.0.0.0", port: int = 8000):
     server_address = (host, port)
     httpd = HTTPServer(server_address, TriageRequestHandler)
-    print("=" * 80)
-    print(f"[*] Orthodontic Demographic Triage Live Server Started")
-    print(f"[*] Dashboard URL: http://localhost:{port}/audit_outputs/triage_review.html")
-    print(f"[*] Host Binding:  {host}:{port} (Container and Local Access Ready)")
-    print(f"[*] Real-time file sync enabled: Decisions instantly update CSV and Quarantine folder")
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info(f"[*] Orthodontic Demographic Triage Live Server Started")
+    logger.info(f"[*] Dashboard URL: http://localhost:{port}/audit_outputs/triage_review.html")
+    logger.info(f"[*] Host Binding:  {host}:{port} (Container and Local Access Ready)")
+    logger.info(f"[*] Real-time file sync enabled: Decisions instantly update CSV and Quarantine folder")
+    logger.info(f"[*] Security: Restricted serving (audit_outputs/ and Dataset/ only), path traversal protection, CSV file locking")
+    logger.info("=" * 80)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\n[!] Server shutting down.")
+        logger.info("\n[!] Server shutting down.")
         httpd.server_close()
 
 

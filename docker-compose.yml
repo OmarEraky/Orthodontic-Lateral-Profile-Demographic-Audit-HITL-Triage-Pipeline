@@ -1,5 +1,10 @@
 # ==============================================================================
 # Orthodontic Demographic Audit & HITL Triage Pipeline - Docker Compose
+#
+# Security:
+# - Host UID/GID mapping via environment variables (avoids running as root)
+# - Input dataset mounted read-only
+# - Model cache persisted in named volume
 # ==============================================================================
 
 services:
@@ -11,6 +16,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: ortho_triage_server
+    # §4.6: Run as host user instead of root (set UID/GID in your shell or .env)
+    user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "0.0.0.0:8000:8000"
     volumes:
@@ -34,6 +41,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: ortho_audit_runner
+    # §4.6: Run as host user instead of root
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./Dataset:/app/Dataset:ro
       - ./audit_outputs:/app/audit_outputs:rw

@@ -10,11 +10,21 @@ Synchronizes audit_demographic_results.csv decisions with the physical file syst
 ================================================================================
 """
 
+import os
 import sys
-import shutil
 import json
+import shutil
+import logging
 from pathlib import Path
 import pandas as pd
+
+# Setup structured logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger("apply_triage")
 
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "audit_outputs"
@@ -26,17 +36,17 @@ VERIFIED_MANIFEST_PATH = OUTPUT_DIR / "Verified_NonEuropean_Cohort_Manifest.csv"
 
 def apply_physical_quarantine():
     if not CSV_PATH.exists():
-        print(f"[!] Error: {CSV_PATH} not found. Run audit_side_profiles.py first.")
+        logger.error(f"Audit ledger not found at {CSV_PATH}. Run audit_side_profiles.py first.")
         sys.exit(1)
 
     df = pd.read_csv(CSV_PATH)
     QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("=" * 80)
-    print("APPLYING CLINICAL TRIAGE DECISIONS TO PHYSICAL FILE SYSTEM")
-    print("=" * 80)
-    print(f"[*] Reading Audit Ledger: {CSV_PATH}")
-    print(f"[*] Quarantine Directory: {QUARANTINE_DIR}")
+    logger.info("=" * 80)
+    logger.info("APPLYING CLINICAL TRIAGE DECISIONS TO PHYSICAL FILE SYSTEM")
+    logger.info("=" * 80)
+    logger.info(f"[*] Reading Audit Ledger: {CSV_PATH}")
+    logger.info(f"[*] Quarantine Directory: {QUARANTINE_DIR}")
 
     quarantined_count = 0
     passed_count = 0
@@ -44,10 +54,15 @@ def apply_physical_quarantine():
 
     for idx, row in df.iterrows():
         tier = row.get("triage_tier")
-        fname = row.get("filename")
-        orig_src = Path(row.get("absolute_path"))
-        class_folder = str(row.get("class_folder")).replace("/", "_").replace(" ", "_")
+        fname = str(row.get("filename", ""))
+        orig_src = Path(str(row.get("absolute_path", "")))
+        class_folder = str(row.get("class_folder", "")).replace("/", "_").replace(" ", "_")
         dest_file = QUARANTINE_DIR / class_folder / fname
+
+        # Path traversal guard
+        if not dest_file.resolve().is_relative_to(QUARANTINE_DIR.resolve()):
+            logger.warning(f"Skipping invalid path: {fname}")
+            continue
 
         if tier == "TIER_3_QUARANTINE":
             dest_file.parent.mkdir(parents=True, exist_ok=True)
@@ -68,23 +83,29 @@ def apply_physical_quarantine():
     verified_df = df[df["triage_tier"] == "TIER_1_PASS"].copy()
     verified_df.to_csv(VERIFIED_MANIFEST_PATH, index=False)
 
-    # Update summary JSON
-    summary = {
-        "total_records": len(df),
-        "verified_non_european_passed": passed_count,
-        "clinical_review_remaining": review_count,
-        "quarantined_european_isolated": quarantined_count,
-        "verified_manifest": str(VERIFIED_MANIFEST_PATH),
-        "quarantine_directory": str(QUARANTINE_DIR)
-    }
+    # Update summary JSON if exists
+    if JSON_PATH.exists():
+        try:
+            with open(JSON_PATH, "r", encoding="utf-8") as f:
+                jdata = json.load(f)
+            if "stratification_summary" in jdata:
+                jdata["stratification_summary"]["tier_1_verified_non_european"]["count"] = passed_count
+                jdata["stratification_summary"]["tier_2_clinical_review_queue"]["count"] = review_count
+                jdata["stratification_summary"]["tier_3_quarantined_european"]["count"] = quarantined_count
+            jdata["verified_manifest"] = str(VERIFIED_MANIFEST_PATH)
+            with open(JSON_PATH, "w", encoding="utf-8") as f:
+                json.dump(jdata, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to update JSON manifest: {e}")
 
-    print("\n" + "=" * 80)
-    print("PHYSICAL SYNCHRONIZATION COMPLETE")
-    print(f"[*] Verified Non-European Profiles (Tier 1): {passed_count} ({passed_count/len(df)*100:.1f}%)")
-    print(f"[*] Ambiguous Review Queue Remaining:       {review_count} ({review_count/len(df)*100:.1f}%)")
-    print(f"[*] Quarantined European Profiles on Disk:   {quarantined_count} ({quarantined_count/len(df)*100:.1f}%)")
-    print(f"[*] Verified Clean Cohort Manifest:          {VERIFIED_MANIFEST_PATH}")
-    print("=" * 80)
+    logger.info("")
+    logger.info("=" * 80)
+    logger.info("PHYSICAL SYNCHRONIZATION COMPLETE")
+    logger.info(f"[*] Verified Non-European Profiles (Tier 1): {passed_count} ({passed_count/len(df)*100:.1f}%)")
+    logger.info(f"[*] Ambiguous Review Queue Remaining:       {review_count} ({review_count/len(df)*100:.1f}%)")
+    logger.info(f"[*] Quarantined European Profiles on Disk:   {quarantined_count} ({quarantined_count/len(df)*100:.1f}%)")
+    logger.info(f"[*] Verified Clean Cohort Manifest:          {VERIFIED_MANIFEST_PATH}")
+    logger.info("=" * 80)
 
 
 if __name__ == "__main__":

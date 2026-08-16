@@ -47,8 +47,8 @@ This pipeline employs **OpenCLIP (ViT-B-32 / ViT-L-14)** with **domain-engineere
 ```
 
 ### 📖 Technical Documentation:
-* [**Modality & Problem Analysis**](docs/PROBLEM_ANALYSIS_AND_SOLUTIONS.md): Detailed examination of why 2D landmarking fails on lateral profiles and evaluation of alternative architectures.
-* [**Pipeline Architecture & Math**](docs/PIPELINE_ARCHITECTURE.md): Mathematical formulations of prompt embeddings, cosine similarity, temperature scaling, and binary Shannon entropy.
+* [**Modality & Problem Analysis**](docs/PROBLEM_ANALYSIS_AND_SOLUTIONS.md): Detailed examination of why 2D landmarking fails on lateral profiles, evaluation of alternative architectures, and analysis of onomastic confirmation bias in post-colonial clinical settings.
+* [**Pipeline Architecture & Math**](docs/PIPELINE_ARCHITECTURE.md): Mathematical formulations of prompt embeddings, cosine similarity, learned temperature scaling, entropy-gated stratification, and security hardening details.
 
 ---
 
@@ -77,6 +77,9 @@ Dataset/
 ### Step 3: Run Automated Batch Audit
 Run the batch audit inference inside the container:
 ```bash
+# Set UID/GID to match your host user (avoids permission issues)
+export UID=$(id -u) GID=$(id -g)
+
 docker compose run --rm audit-runner
 ```
 *The pipeline will process all profile images, compute non-European posterior probabilities, generate `audit_demographic_results.csv`, isolate high-confidence European cases, and build `triage_review.html`.*
@@ -84,9 +87,12 @@ docker compose run --rm audit-runner
 ### Step 4: Launch Interactive Triage Dashboard
 Start the live triage server:
 ```bash
+export UID=$(id -u) GID=$(id -g)
 docker compose up triage-server
 ```
 Open your browser at **[http://127.0.0.1:8000](http://127.0.0.1:8000)** (or `http://localhost:8000`) to view the interactive dashboard.
+
+> **Note:** If you encounter permission errors, you can fall back to root execution by removing the `user:` directive in `docker-compose.yml`, or running `sudo docker compose ...`.
 
 ---
 
@@ -141,7 +147,7 @@ Visit **[http://127.0.0.1:8000](http://127.0.0.1:8000)** (or `http://localhost:8
 The web dashboard (`audit_outputs/triage_review.html`) provides real-time Human-in-the-Loop review:
 
 1. **KPI Summary Cards:** Displays total profiles audited, verified non-European counts, review queue volume, and quarantined European counts.
-2. **🏷️ NLP Onomastic Demographic Badges:** Displays sub-word and character-level origin classifications (e.g. `🏷️ Rayan AAMAMOU | NLP: MENA (88%)`, `🏷️ Diego DESLOVERE | NLP: European (73%)`, `🏷️ Sarah Kumar | NLP: South Asian (87%)`) on every card.
+2. **🏷️ NLP Onomastic Demographic Badges (Collapsed by Default):** Onomastic predictions are **hidden by default** to prevent anchoring bias. Clinicians click to reveal sub-word and character-level origin classifications (e.g. `🏷️ Rayan AAMAMOU | NLP: MENA (88%)`, `🏷️ Diego DESLOVERE | NLP: European (73%)`). When the NLP model and vision model disagree, a **discordance warning** is shown.
 3. **Filterable Tabs:** Seamlessly toggle between:
    * **All Profiles** (Complete dataset)
    * **Quarantined European** (Isolated European profiles)
@@ -166,10 +172,31 @@ The web dashboard (`audit_outputs/triage_review.html`) provides real-time Human-
 * **Air-Gapped Local Inference:** All OpenCLIP model weights and demographic prompts execute **100% offline on local hardware**. No patient biometric images are transmitted to external commercial APIs.
 * **Git Shielding:** The repository's `.gitignore` strictly prohibits committing any files under `Dataset/`, `audit_outputs/`, or any image formats (`*.jpg`, `*.png`, `*.dcm`).
 * **Volume Isolation:** In Docker deployment, input patient data is mounted **Read-Only (`:ro`)**, preventing accidental deletion or data corruption.
+* **Non-Root Containers:** Docker services run as the host user (via `UID`/`GID` mapping) instead of `root`, reducing the attack surface.
+* **Restricted File Serving:** The triage server only serves files from `audit_outputs/` and `Dataset/` — source code, `.git/`, and infrastructure files are never exposed via HTTP.
+* **Path Traversal Protection:** All API endpoints validate filenames and verify quarantine paths remain within expected directories.
+* **CSV Locking:** File-level advisory locks prevent concurrent read-modify-write race conditions on the audit ledger.
+* **Audit Trail:** All operations are logged to both `stdout` and `audit_outputs/pipeline.log` with structured timestamps.
 
 ---
 
-## 📊 7. Decision Stratification Logic
+## 🔬 7. Safety & Robustness Features
+
+| Feature | Description |
+|---|---|
+| **Learned Temperature Scaling** | Uses the model's learned `logit_scale` (not a hardcoded τ=100) for calibrated softmax probabilities |
+| **Entropy-Gated Stratification** | Binary Shannon entropy acts as a secondary confidence gate — high-entropy cases near thresholds are routed to clinical review |
+| **Image Integrity Verification** | Truncated, corrupt, and zero-byte images are detected via PIL's `verify()` before inference |
+| **GPU OOM Recovery** | Automatic half-batch retry on CUDA out-of-memory errors |
+| **Atomic Quarantine** | `--quarantine-mode move` uses copy → SHA-256 verify → unlink for data integrity |
+| **NLP Anchoring Bias Mitigation** | Onomastic badges collapsed by default; discordance warnings shown for vision/NLP disagreement |
+| **Balanced Prompt Ensembles** | All 5 demographic cohorts have exactly 5 prompts for uniform centroid estimation |
+| **Request Size Limits** | Server rejects POST bodies exceeding 10 MB to prevent OOM |
+| **Reproducibility Metadata** | Summary JSON records Python, PyTorch, OpenCLIP versions, git hash, and learned temperature |
+
+---
+
+## 📊 8. Decision Stratification Logic
 
 The system evaluates the **Binary Non-European Probability**:
 
@@ -177,6 +204,6 @@ $$P(\text{Non-European}) = \sum_{c \neq \text{European}} P(c) = 1 - P(\text{Euro
 
 $$H_{\text{binary}} = -\left( P(\text{Eur}) \log_2 P(\text{Eur}) + P(\text{Non-Eur}) \log_2 P(\text{Non-Eur}) \right)$$
 
-* **Tier 1 (Auto-Pass):** $P(\text{Non-European}) \ge 0.70$ $\rightarrow$ Verified for clean training cohort.
-* **Tier 3 (Auto-Quarantine):** $P(\text{European}) \ge 0.70$ $\rightarrow$ Isolated to `Quarantined_European_Profiles/`.
-* **Tier 2 (Clinical Review Queue):** $0.30 < P(\text{European}) < 0.70$ $\rightarrow$ Routed to the interactive dashboard for clinician verification.
+* **Tier 1 (Auto-Pass):** $P(\text{Non-European}) \ge 0.70$ AND $H < 0.65$ $\rightarrow$ Verified for clean training cohort.
+* **Tier 3 (Auto-Quarantine):** $P(\text{European}) \ge 0.70$ AND $H < 0.65$ $\rightarrow$ Isolated to `Quarantined_European_Profiles/`.
+* **Tier 2 (Clinical Review Queue):** $0.30 < P(\text{European}) < 0.70$ OR $H > 0.65$ (entropy-gated) $\rightarrow$ Routed to the interactive dashboard for clinician verification.

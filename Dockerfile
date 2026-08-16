@@ -1,6 +1,11 @@
 # ==============================================================================
 # Orthodontic Demographic Audit & HITL Triage Pipeline - Production Container
 # Base: Python 3.11 Slim (Debian-based)
+#
+# Security Hardening:
+# - Non-root execution supported via docker-compose user directive
+# - Python-native healthcheck (no curl dependency)
+# - Strict layer caching for reproducible builds
 # ==============================================================================
 
 FROM python:3.11-slim
@@ -19,15 +24,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsm6 \
     libxext6 \
     libxrender-dev \
-    curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Set up working directory
 WORKDIR /app
 
-# Create required working directories
-RUN mkdir -p /app/Dataset /app/audit_outputs /app/.cache/torch /app/.cache/huggingface
+# Create required working directories with open permissions for non-root execution
+RUN mkdir -p /app/Dataset /app/audit_outputs /app/.cache/torch /app/.cache/huggingface \
+    && chmod -R 777 /app/audit_outputs /app/.cache
 
 # Copy dependency specifications first to leverage Docker layer caching
 COPY requirements.txt .
@@ -44,9 +49,9 @@ COPY audit_side_profiles.py triage_server.py apply_triage_decisions.py ./
 # Expose port for interactive Triage Dashboard
 EXPOSE 8000
 
-# Healthcheck to ensure triage server is responding
+# §4.7: Python-native healthcheck (removes curl dependency)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/api/status || exit 1
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/status')" || exit 1
 
 # Default command: Start Live Triage Dashboard Server
 CMD ["python3", "triage_server.py", "--host", "0.0.0.0", "--port", "8000"]

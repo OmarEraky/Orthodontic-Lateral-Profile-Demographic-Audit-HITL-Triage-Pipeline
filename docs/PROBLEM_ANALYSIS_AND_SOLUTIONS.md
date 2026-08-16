@@ -55,6 +55,30 @@ Rather than relying on brittle hardcoded name lists, the pipeline leverages a pr
 
 ---
 
+### 1.3 Onomastic Confirmation Bias in Post-Colonial Clinical Settings
+
+While the neural NLP model significantly outperforms dictionary lookups, displaying onomastic predictions alongside clinical images creates a risk of **anchoring bias** in human-in-the-loop review:
+
+```
+                    Anchoring Bias Risk Flow
+                              │
+     ┌────────────────────────┼────────────────────────┐
+     │                        │                        │
+  Clinician sees           NLP badge says          Clinician is primed
+  patient profile          "European (92%)"       by the NLP label and
+  on triage card           prominently displayed   may override their
+                                                   own visual judgment
+```
+
+**Post-colonial naming creates systematic false signals:** In the Belgium-Emmanuelle Clinic dataset, many non-European patients carry European-origin surnames (e.g., Congolese patients with Flemish/French names) due to colonial civil registries. An uncollapsed NLP badge predicting "European" for these patients could systematically bias clinicians toward false quarantine.
+
+**Mitigations implemented:**
+1. **NLP badges are collapsed by default** — clinicians must click to reveal onomastic predictions, reducing priming before visual assessment.
+2. **Discordance warnings** — when the NLP model predicts European ($P(\text{Eur}|\text{Name}) \ge 0.70$) but the vision model disagrees ($P(\text{Eur}|\text{Image}) < 0.50$), an explicit warning is displayed: *"⚠️ Discordance: NLP suggests European but vision disagrees — possible post-colonial naming."*
+3. **In `manual` mode**, the NLP engine is not loaded at all, providing a pure vision baseline.
+
+---
+
 ## 2. Technical Solution Architectures
 
 To address the limitations of traditional facial recognition, four potential solution architectures were evaluated:

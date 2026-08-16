@@ -14,17 +14,37 @@ import sys
 import re
 import json
 import shutil
+import hashlib
+import logging
 import argparse
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Tuple, Any, Optional
 
 import numpy as np
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageFile
 from tqdm import tqdm
 import torch
 import open_clip
+
+# ==============================================================================
+# GLOBAL SAFETY CONFIGURATION
+# ==============================================================================
+# Fail-fast on truncated images: prevents silent corruption from entering the pipeline
+ImageFile.LOAD_TRUNCATED_IMAGES = False
+
+# Structured logging (replaces print statements for medical-grade audit trail)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger("ortho_audit")
+
+# Maximum allowed request body size for NLP batch inference (prevents OOM)
+NLP_BATCH_CHUNK_SIZE = 256
 
 # ==============================================================================
 # 1. DOMAIN-ENGINEERED LATERAL PROMPT ENSEMBLES
@@ -56,13 +76,15 @@ LATERAL_ORTHODONTIC_PROMPT_CLUSTERS: Dict[str, List[str]] = {
         "a lateral side-profile photograph of a North African or Middle Eastern Arab patient",
         "a side-view orthodontic portrait of a patient of Maghrebi or Middle Eastern descent",
         "a clinical lateral profile photo of an individual with North African or Middle Eastern features",
-        "a side profile view of an individual of North African or Arab ancestry"
+        "a side profile view of an individual of North African or Arab ancestry",
+        "a lateral photograph of a patient of Middle Eastern or North African heritage showing characteristic profile morphology"
     ],
     "East_Asian": [
         "a lateral side-profile photograph of an East Asian individual",
         "a side-view orthodontic photo of a patient of East Asian descent with characteristic lateral profile",
         "a clinical lateral profile portrait of an individual of East Asian heritage",
-        "a side profile photograph of a person of East Asian descent"
+        "a side profile photograph of a person of East Asian descent",
+        "a lateral photograph of an East Asian patient showing characteristic facial soft-tissue contours"
     ]
 }
 
@@ -184,8 +206,9 @@ class NLPOnomasticEngine:
 
     def predict_batch(self, names: List[str]) -> List[Dict[str, Any]]:
         """
-        Runs batch NLP inference across a list of parsed names.
+        Runs chunked batch NLP inference across a list of parsed names.
         Returns demographic classification, European vs. Non-European probability, and triage recommendation.
+        Chunks input to prevent OOM on large datasets (>10k names).
         """
         if not self.classifier or not names:
             return [{
@@ -198,10 +221,15 @@ class NLPOnomasticEngine:
                 "nlp_triage_suggestion": "MANUAL_REVIEW"
             } for n in names]
 
-        results = self.classifier(names)
+        # Chunked inference to prevent NLP-side OOM on large datasets
+        all_results = []
+        for chunk_start in range(0, len(names), NLP_BATCH_CHUNK_SIZE):
+            chunk = names[chunk_start:chunk_start + NLP_BATCH_CHUNK_SIZE]
+            all_results.extend(self.classifier(chunk))
+
         parsed_outputs = []
 
-        for name, res in zip(names, results):
+        for name, res in zip(names, all_results):
             label_scores = {item["label"]: float(item["score"]) for item in res}
             
             # Map raceBERT hierarchical classes to European vs Non-European
@@ -275,13 +303,20 @@ def stratify_demographic_decision(
     nlp_info: Optional[Dict[str, Any]] = None,
     triage_mode: str = "hybrid",
     tau_quarantine: float = 0.70,
-    tau_retain: float = 0.30
+    tau_retain: float = 0.30,
+    entropy_review_threshold: float = 0.65
 ) -> Tuple[str, str, str]:
     """
     Binary Three-Tier Stratification Logic supporting:
     - Mode 'hybrid' (Default): OpenCLIP vision thresholds + NLP name origin metadata badges.
     - Mode 'name-heuristic': Auto-resolves Tier 2 borderline cases using NLP model certainty.
     - Mode 'manual': Pure visual baseline.
+
+    Entropy Integration:
+        Binary Shannon entropy (H_binary) is used as a secondary confidence gate.
+        If H_binary > entropy_review_threshold (default 0.65 bits, max 1.0 bit),
+        borderline cases near thresholds are routed to Tier 2 review even if
+        probability thresholds would otherwise auto-resolve them.
     """
     p_eur = probs_dict.get("European", 0.0)
     p_non_eur = float(np.sum([v for k, v in probs_dict.items() if k != "European"]))
@@ -289,16 +324,27 @@ def stratify_demographic_decision(
     dominant_non_eur = max(non_eur_candidates.items(), key=lambda x: x[1])[0] if non_eur_candidates else "Unknown"
 
     # Tier 3: High Confidence European (AI Vision)
+    # Entropy gate: if entropy is very high even at threshold, route to review
     if p_eur >= tau_quarantine:
+        if entropy_binary > entropy_review_threshold and p_eur < (tau_quarantine + 0.10):
+            return "TIER_2_REVIEW", "NEEDS_REVIEW", (
+                f"Entropy-gated review: P_Eur={p_eur*100:.1f}% meets threshold but H={entropy_binary:.3f} bits "
+                f"exceeds confidence gate ({entropy_review_threshold}). Requires clinical verification."
+            )
         return "TIER_3_QUARANTINE", "AUTO_QUARANTINE", (
-            f"High-confidence European profile (P_Eur={p_eur*100:.1f}%). "
+            f"High-confidence European profile (P_Eur={p_eur*100:.1f}%, H={entropy_binary:.3f}). "
             "Isolated to quarantine directory."
         )
 
     # Tier 1: High Confidence Non-European (AI Vision)
     if p_eur <= tau_retain and p_non_eur >= (1.0 - tau_retain):
+        if entropy_binary > entropy_review_threshold and p_non_eur < (1.0 - tau_retain + 0.10):
+            return "TIER_2_REVIEW", "NEEDS_REVIEW", (
+                f"Entropy-gated review: P_NonEur={p_non_eur*100:.1f}% meets threshold but H={entropy_binary:.3f} bits "
+                f"exceeds confidence gate ({entropy_review_threshold}). Requires clinical verification."
+            )
         return "TIER_1_PASS", "AUTO_PASS", (
-            f"Verified Non-European cohort (P_NonEur={p_non_eur*100:.1f}%, dominant={dominant_non_eur}). "
+            f"Verified Non-European cohort (P_NonEur={p_non_eur*100:.1f}%, dominant={dominant_non_eur}, H={entropy_binary:.3f}). "
             "Passed to research cohort."
         )
 
@@ -320,7 +366,8 @@ def stratify_demographic_decision(
 
     # Tier 2: True Binary Clinical Ambiguity (Routed to HITL Web Dashboard / Assisted Mode)
     return "TIER_2_REVIEW", "NEEDS_REVIEW", (
-        f"Clinical verification required: Borderline European probability ({p_eur*100:.1f}% vs Non-Eur={p_non_eur*100:.1f}%)"
+        f"Clinical verification required: Borderline European probability "
+        f"({p_eur*100:.1f}% vs Non-Eur={p_non_eur*100:.1f}%, H={entropy_binary:.3f} bits)"
     )
 
 
@@ -336,7 +383,6 @@ def run_batch_demographic_audit(
     nlp_engine: Optional[NLPOnomasticEngine],
     device: torch.device,
     batch_size: int = 32,
-    temperature: float = 100.0,
     triage_mode: str = "hybrid",
     tau_quarantine: float = 0.70,
     tau_retain: float = 0.30
@@ -361,12 +407,17 @@ def run_batch_demographic_audit(
 
         for idx_in_chunk, record in enumerate(batch_chunk):
             try:
-                img = Image.open(record["absolute_path"]).convert("RGB")
+                # Phase 1 §1.1: Image integrity verification (truncation + EXIF safety)
+                img = Image.open(record["absolute_path"])
+                img.verify()  # Detects truncated/corrupt files without loading pixels
+                img = Image.open(record["absolute_path"])  # Must reopen after verify()
+                img = img.convert("RGB")  # Handles CMYK, RGBA, P-mode, L-mode
                 tensor = preprocess(img)
                 valid_tensors.append(tensor)
                 valid_chunk_indices.append(idx_in_chunk)
             except Exception as e:
-                # Corrupt image fallback
+                # Corrupt image fallback — logged for audit trail
+                logger.warning(f"Corrupt image skipped: {record['filename']} — {e}")
                 nlp_info = batch_nlp[idx_in_chunk]
                 res = dict(record)
                 res.update({
@@ -393,11 +444,25 @@ def run_batch_demographic_audit(
 
         batch_tensor = torch.stack(valid_tensors, dim=0).to(device)
 
+        # Phase 1 §2.1: Use the model's learned logit_scale instead of hardcoded τ=100
+        # Phase 2 §1.2: GPU OOM recovery with automatic half-batch retry
         with torch.no_grad():
-            image_features = model.encode_image(batch_tensor)
+            learned_temperature = model.logit_scale.exp()
+            try:
+                image_features = model.encode_image(batch_tensor)
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as oom_err:
+                if "out of memory" in str(oom_err).lower() or isinstance(oom_err, torch.cuda.OutOfMemoryError):
+                    logger.warning(f"OOM on batch of {batch_tensor.shape[0]} — retrying with half-batch")
+                    torch.cuda.empty_cache()
+                    half = batch_tensor.shape[0] // 2
+                    feat_a = model.encode_image(batch_tensor[:half])
+                    feat_b = model.encode_image(batch_tensor[half:])
+                    image_features = torch.cat([feat_a, feat_b], dim=0)
+                else:
+                    raise
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-            # Dot product with category text centroids
-            logits = torch.matmul(image_features, stacked_text_embeddings.T) * temperature
+            # Dot product with category text centroids, scaled by learned temperature
+            logits = torch.matmul(image_features, stacked_text_embeddings.T) * learned_temperature
             probabilities = torch.softmax(logits, dim=-1).cpu().numpy()
 
         for j, chunk_idx in enumerate(valid_chunk_indices):
@@ -455,6 +520,15 @@ def run_batch_demographic_audit(
 # ==============================================================================
 # 6. PHYSICAL ISOLATION & QUARANTINE MANAGER
 # ==============================================================================
+def _file_sha256(path: Path) -> str:
+    """Computes SHA-256 hash for file integrity verification."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def manage_quarantine_isolation(
     audit_results: List[Dict[str, Any]],
     quarantine_root: Path,
@@ -462,6 +536,7 @@ def manage_quarantine_isolation(
 ) -> Dict[str, int]:
     """
     Isolates Tier 3 (European) records into designated quarantine malocclusion subdirectories.
+    Uses atomic copy-then-verify for data integrity (Phase 2 §1.4).
     """
     quarantine_counts = {}
     quarantine_root.mkdir(parents=True, exist_ok=True)
@@ -469,6 +544,10 @@ def manage_quarantine_isolation(
     for item in audit_results:
         if item["triage_tier"] == "TIER_3_QUARANTINE":
             src_path = Path(item["absolute_path"])
+            if not src_path.exists():
+                logger.warning(f"Quarantine source missing: {src_path}")
+                continue
+
             clean_class = item["class_folder"].replace("/", "_").replace(" ", "_")
             dest_dir = quarantine_root / clean_class
             dest_dir.mkdir(parents=True, exist_ok=True)
@@ -477,7 +556,16 @@ def manage_quarantine_isolation(
             if mode == "copy":
                 shutil.copy2(src_path, dest_file)
             elif mode == "move":
-                shutil.move(src_path, dest_file)
+                # Atomic move: copy first, verify checksum, then unlink source
+                shutil.copy2(src_path, dest_file)
+                src_hash = _file_sha256(src_path)
+                dest_hash = _file_sha256(dest_file)
+                if src_hash == dest_hash:
+                    src_path.unlink()
+                else:
+                    logger.error(f"Checksum mismatch during move: {src_path} — source preserved")
+                    dest_file.unlink()  # Remove corrupt copy
+                    continue
 
             quarantine_counts[clean_class] = quarantine_counts.get(clean_class, 0) + 1
 
@@ -848,7 +936,7 @@ def generate_triage_html_dashboard(
             font-weight: 600;
         }}
 
-        /* NLP Onomastic Metadata Box */
+        /* NLP Onomastic Metadata Box — collapsed by default to reduce anchoring bias (§2.4) */
         .nlp-badge-box {{
             background: rgba(30, 41, 59, 0.75);
             border: 1px solid rgba(255, 255, 255, 0.08);
@@ -858,6 +946,36 @@ def generate_triage_html_dashboard(
             display: flex;
             flex-direction: column;
             gap: 0.25rem;
+        }}
+
+        .nlp-badge-box .nlp-details {{
+            display: none;
+        }}
+
+        .nlp-badge-box.expanded .nlp-details {{
+            display: block;
+        }}
+
+        .nlp-toggle-btn {{
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 0.7rem;
+            font-family: var(--font-mono);
+            cursor: pointer;
+            padding: 0.15rem 0;
+            text-align: left;
+        }}
+
+        .nlp-toggle-btn:hover {{
+            color: var(--text-secondary);
+        }}
+
+        .nlp-discordance-flag {{
+            font-size: 0.65rem;
+            color: #fbbf24;
+            font-family: var(--font-mono);
+            margin-top: 2px;
         }}
 
         .nlp-title-row {{
@@ -1170,13 +1288,19 @@ def generate_triage_html_dashboard(
                         <div class="card-filename" title="${{item.filename}}">${{item.filename}}</div>
                         <div class="card-class">${{item.class_folder}} • H=${{item.entropy.toFixed(2)}}</div>
 
-                        <!-- NLP Onomastic Box -->
-                        <div class="nlp-badge-box">
-                            <div class="nlp-title-row">
-                                <span class="nlp-name-tag" title="${{item.parsed_name || item.filename}}">🏷️ ${{item.parsed_name || item.filename}}</span>
-                                <span class="nlp-origin-badge ${{nlpOriginClass}}">NLP: ${{item.name_demographic || 'Ambiguous'}} (${{((item.nlp_confidence || 0.5)*100).toFixed(0)}}%)</span>
+                        <!-- NLP Onomastic Box — collapsed by default to reduce anchoring bias (§2.4) -->
+                        <div class="nlp-badge-box" id="nlp-${{item.filename.replace(/[^a-zA-Z0-9]/g, '_')}}">
+                            <button class="nlp-toggle-btn" onclick="toggleNLP('nlp-${{item.filename.replace(/[^a-zA-Z0-9]/g, '_')}}')">
+                                🏷️ Name Origin Analysis — <em>click to reveal</em>
+                            </button>
+                            <div class="nlp-details">
+                                <div class="nlp-title-row">
+                                    <span class="nlp-name-tag" title="${{item.parsed_name || item.filename}}">🏷️ ${{item.parsed_name || item.filename}}</span>
+                                    <span class="nlp-origin-badge ${{nlpOriginClass}}">NLP: ${{item.name_demographic || 'Ambiguous'}} (${{((item.nlp_confidence || 0.5)*100).toFixed(0)}}%)</span>
+                                </div>
+                                <div style="font-size:0.7rem; color:var(--text-muted); margin-top:2px;">Origin: ${{item.predicted_origin || 'Ambiguous / Mixed'}}</div>
+                                ${{(item.p_name_european >= 0.70 && item.p_european < 0.50) ? '<div class="nlp-discordance-flag">⚠️ Discordance: NLP suggests European but vision disagrees — possible post-colonial naming</div>' : ''}}
                             </div>
-                            <div style="font-size:0.7rem; color:var(--text-muted); margin-top:2px;">Origin: ${{item.predicted_origin || 'Ambiguous / Mixed'}}</div>
                         </div>
 
                         <div class="prob-section">
@@ -1368,6 +1492,19 @@ def generate_triage_html_dashboard(
             if (e.key === 'Escape') closeZoom();
         }});
 
+        function toggleNLP(id) {{
+            const box = document.getElementById(id);
+            if (box) {{
+                box.classList.toggle('expanded');
+                const btn = box.querySelector('.nlp-toggle-btn');
+                if (btn) {{
+                    btn.innerHTML = box.classList.contains('expanded')
+                        ? '🏷️ Name Origin Analysis — <em>click to hide</em>'
+                        : '🏷️ Name Origin Analysis — <em>click to reveal</em>';
+                }}
+            }}
+        }}
+
         // Initialization
         initLocalStorage();
         checkServerStatus();
@@ -1471,28 +1608,34 @@ def main():
     output_root = Path(args.output_dir).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
 
-    print("=" * 80)
-    print("ORTHODONTIC LATERAL PROFILE DEMOGRAPHIC AUDIT & ISOLATION PIPELINE")
-    print("=" * 80)
-    print(f"[*] Dataset Root:     {data_root}")
-    print(f"[*] Output Directory: {output_root}")
-    print(f"[*] Vision Model:     {args.model_name} (weights: {args.pretrained})")
-    print(f"[*] NLP Model:        {args.nlp_model} (mode: {args.triage_mode})")
-    print(f"[*] Compute Device:   {args.device.upper()}")
-    print(f"[*] Thresholds:       Quarantine P(Eur)>={args.tau_quarantine} | Pass P(Eur)<={args.tau_retain}")
-    print("=" * 80)
+    # Add file-based log handler for audit trail persistence
+    log_file_path = output_root / "pipeline.log"
+    file_handler = logging.FileHandler(log_file_path, mode="a", encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(file_handler)
+
+    logger.info("=" * 80)
+    logger.info("ORTHODONTIC LATERAL PROFILE DEMOGRAPHIC AUDIT & ISOLATION PIPELINE")
+    logger.info("=" * 80)
+    logger.info(f"[*] Dataset Root:     {data_root}")
+    logger.info(f"[*] Output Directory: {output_root}")
+    logger.info(f"[*] Vision Model:     {args.model_name} (weights: {args.pretrained})")
+    logger.info(f"[*] NLP Model:        {args.nlp_model} (mode: {args.triage_mode})")
+    logger.info(f"[*] Compute Device:   {args.device.upper()}")
+    logger.info(f"[*] Thresholds:       Quarantine P(Eur)>={args.tau_quarantine} | Pass P(Eur)<={args.tau_retain}")
+    logger.info("=" * 80)
 
     # 1. Image Discovery
-    print("[1/5] Discovering lateral profile image records across malocclusion folders...")
+    logger.info("[1/5] Discovering lateral profile image records across malocclusion folders...")
     image_records = discover_dataset_images(data_root)
-    print(f"      Found {len(image_records)} valid lateral profile images.")
+    logger.info(f"      Found {len(image_records)} valid lateral profile images.")
 
     if not image_records:
-        print("[!] No images found. Exiting.")
+        logger.error("[!] No images found. Exiting.")
         sys.exit(1)
 
     # 2. Model Loading
-    print(f"[2/5] Initializing OpenCLIP {args.model_name} & NLP Onomastic Model on {args.device}...")
+    logger.info(f"[2/5] Initializing OpenCLIP {args.model_name} & NLP Onomastic Model on {args.device}...")
     device = torch.device(args.device)
     model, _, preprocess = open_clip.create_model_and_transforms(
         args.model_name,
@@ -1501,22 +1644,26 @@ def main():
     )
     tokenizer = open_clip.get_tokenizer(args.model_name)
 
+    # Log the learned logit_scale for reproducibility (§2.1)
+    learned_temp = model.logit_scale.exp().item()
+    logger.info(f"      Learned logit_scale (τ): {learned_temp:.2f} (replacing hardcoded τ=100)")
+
     nlp_engine = None
     if args.triage_mode != "manual":
         nlp_engine = NLPOnomasticEngine(model_name=args.nlp_model, device=args.device)
 
     # 3. Prompt Text Embeddings
-    print("[3/5] Encoding domain-engineered orthodontic lateral prompt ensembles...")
+    logger.info("[3/5] Encoding domain-engineered orthodontic lateral prompt ensembles...")
     stacked_text_embeddings, category_names = compute_normalized_text_embeddings(
         model=model,
         tokenizer=tokenizer,
         device=device,
         prompt_clusters=LATERAL_ORTHODONTIC_PROMPT_CLUSTERS
     )
-    print(f"      Compiled {len(category_names)} demographic cohorts: {category_names}")
+    logger.info(f"      Compiled {len(category_names)} demographic cohorts: {category_names}")
 
     # 4. Batch Audit Inference
-    print(f"[4/5] Executing batch inference across {len(image_records)} images (batch_size={args.batch_size}, mode={args.triage_mode})...")
+    logger.info(f"[4/5] Executing batch inference across {len(image_records)} images (batch_size={args.batch_size}, mode={args.triage_mode})...")
     audit_results = run_batch_demographic_audit(
         image_records=image_records,
         model=model,
@@ -1532,13 +1679,13 @@ def main():
     )
 
     # 5. Quarantine & Artifact Export
-    print("[5/5] Generating manifests, isolating quarantined profiles, and building triage HTML...")
+    logger.info("[5/5] Generating manifests, isolating quarantined profiles, and building triage HTML...")
     
     # Save CSV
     df = pd.DataFrame(audit_results)
     csv_path = output_root / "audit_demographic_results.csv"
     df.to_csv(csv_path, index=False)
-    print(f"      [✓] Audit CSV ledger saved to: {csv_path}")
+    logger.info(f"      [✓] Audit CSV ledger saved to: {csv_path}")
 
     # Manage Quarantine Folder
     quarantine_counts = {}
@@ -1549,9 +1696,9 @@ def main():
             quarantine_root=quarantine_dir,
             mode=args.quarantine_mode
         )
-        print(f"      [✓] Quarantined European records copied to: {quarantine_dir}")
+        logger.info(f"      [✓] Quarantined European records copied to: {quarantine_dir}")
 
-    # Save Summary JSON
+    # Save Summary JSON with reproducibility metadata (§4.5)
     tier1_total = sum(1 for r in audit_results if r["triage_tier"] == "TIER_1_PASS")
     tier2_total = sum(1 for r in audit_results if r["triage_tier"] == "TIER_2_REVIEW")
     tier3_total = sum(1 for r in audit_results if r["triage_tier"] == "TIER_3_QUARANTINE")
@@ -1562,8 +1709,13 @@ def main():
         "total_images_audited": len(audit_results),
         "model_architecture": args.model_name,
         "pretrained_weights": args.pretrained,
+        "learned_logit_scale": round(learned_temp, 4),
         "triage_mode": args.triage_mode,
         "nlp_model": args.nlp_model if args.triage_mode != "manual" else "None",
+        "thresholds": {
+            "tau_quarantine": args.tau_quarantine,
+            "tau_retain": args.tau_retain
+        },
         "stratification_summary": {
             "tier_1_verified_non_european": {
                 "count": tier1_total,
@@ -1581,14 +1733,23 @@ def main():
         "quarantine_by_class": quarantine_counts,
         "artifacts": {
             "csv_ledger": str(csv_path),
-            "html_dashboard": str(output_root / "triage_review.html")
+            "html_dashboard": str(output_root / "triage_review.html"),
+            "pipeline_log": str(log_file_path)
+        },
+        "environment": {
+            "python_version": sys.version,
+            "torch_version": torch.__version__,
+            "open_clip_version": open_clip.__version__,
+            "numpy_version": np.__version__,
+            "pandas_version": pd.__version__,
+            "pipeline_git_hash": subprocess.getoutput("git rev-parse --short HEAD 2>/dev/null") or "unknown"
         }
     }
 
     json_path = output_root / "audit_summary_manifest.json"
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(summary_manifest, f, indent=2)
-    print(f"      [✓] Summary JSON manifest saved to: {json_path}")
+    logger.info(f"      [✓] Summary JSON manifest saved to: {json_path}")
 
     # Generate HTML Dashboard
     html_path = output_root / "triage_review.html"
@@ -1597,15 +1758,17 @@ def main():
         output_html_path=html_path,
         data_root=data_root
     )
-    print(f"      [✓] Interactive Triage Dashboard saved to: {html_path}")
+    logger.info(f"      [✓] Interactive Triage Dashboard saved to: {html_path}")
 
-    print("\n" + "=" * 80)
-    print("AUDIT EXECUTION COMPLETE")
-    print(f"Verified Non-European (Tier 1):  {tier1_total} ({tier1_total/len(audit_results)*100:.1f}%)")
-    print(f"Clinical Review Queue (Tier 2):  {tier2_total} ({tier2_total/len(audit_results)*100:.1f}%)")
-    print(f"Quarantined European (Tier 3):   {tier3_total} ({tier3_total/len(audit_results)*100:.1f}%)")
-    print("=" * 80)
+    logger.info("")
+    logger.info("=" * 80)
+    logger.info("AUDIT EXECUTION COMPLETE")
+    logger.info(f"Verified Non-European (Tier 1):  {tier1_total} ({tier1_total/len(audit_results)*100:.1f}%)")
+    logger.info(f"Clinical Review Queue (Tier 2):  {tier2_total} ({tier2_total/len(audit_results)*100:.1f}%)")
+    logger.info(f"Quarantined European (Tier 3):   {tier3_total} ({tier3_total/len(audit_results)*100:.1f}%)")
+    logger.info("=" * 80)
 
 
 if __name__ == "__main__":
     main()
+
