@@ -77,18 +77,22 @@ Dataset/
 ### Step 3: Run Automated Batch Audit
 Run the batch audit inference inside the container:
 ```bash
-docker compose run --rm audit-runner
+sudo docker compose run --build --rm audit-runner
 ```
 *The pipeline will process all profile images, compute non-European posterior probabilities, generate `audit_demographic_results.csv`, isolate high-confidence European cases, and build `triage_review.html`.*
 
 ### Step 4: Launch Interactive Triage Dashboard
 Start the live triage server:
 ```bash
-docker compose up triage-server
+sudo docker compose up triage-server
 ```
 Open your browser at **[http://127.0.0.1:8000](http://127.0.0.1:8000)** (or `http://localhost:8000`) to view the interactive dashboard.
 
-> **Note:** If you encounter permission errors, you can fall back to root execution by removing the `user:` directive in `docker-compose.yml`, or running `sudo docker compose ...`.
+> [!TIP]
+> **Host Permission Tip:** If you encounter `PermissionError: [Errno 13]`, grant write permissions to the output folder:
+> ```bash
+> sudo chown -R $USER:$USER audit_outputs && chmod -R 777 audit_outputs
+> ```
 
 ---
 
