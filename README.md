@@ -91,7 +91,7 @@ Open your browser at **[http://127.0.0.1:8000](http://127.0.0.1:8000)** (or `htt
 > [!TIP]
 > **Host Permission Tip:** If you encounter `PermissionError: [Errno 13]`, grant write permissions to the output folder:
 > ```bash
-> sudo chown -R $USER:$USER audit_outputs && chmod -R 777 audit_outputs
+> sudo chmod -R 777 audit_outputs || (mkdir -p audit_outputs && sudo chmod -R 777 audit_outputs)
 > ```
 
 ---
