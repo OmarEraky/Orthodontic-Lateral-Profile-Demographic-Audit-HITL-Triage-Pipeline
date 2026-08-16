@@ -77,9 +77,6 @@ Dataset/
 ### Step 3: Run Automated Batch Audit
 Run the batch audit inference inside the container:
 ```bash
-# Set UID/GID to match your host user (avoids permission issues)
-export UID=$(id -u) GID=$(id -g)
-
 docker compose run --rm audit-runner
 ```
 *The pipeline will process all profile images, compute non-European posterior probabilities, generate `audit_demographic_results.csv`, isolate high-confidence European cases, and build `triage_review.html`.*
@@ -87,7 +84,6 @@ docker compose run --rm audit-runner
 ### Step 4: Launch Interactive Triage Dashboard
 Start the live triage server:
 ```bash
-export UID=$(id -u) GID=$(id -g)
 docker compose up triage-server
 ```
 Open your browser at **[http://127.0.0.1:8000](http://127.0.0.1:8000)** (or `http://localhost:8000`) to view the interactive dashboard.
